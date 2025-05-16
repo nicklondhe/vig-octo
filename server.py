@@ -19,25 +19,27 @@ Base.metadata.bind = engine
 DBSession = sessionmaker(bind=engine)
 
 
-# Add an addition tool
-@mcp.tool()
-def add(a: int, b: int) -> int:
-    """Add two numbers"""
-    return a + b
-
-
-# Add a dynamic greeting resource
-@mcp.resource("greeting://{name}")
-def get_greeting(name: str) -> str:
-    """Get a personalized greeting"""
-    return f"Hello, {name}!"
-
-
 # Response model for task listing
 class TaskList(BaseModel):
     '''TaskList is a model for the task list response'''
     tasks: List[dict[str, object]]
 
+# Request model for adding a task
+class AddTaskRequest(BaseModel):
+    """Model for task creation request"""
+    name: str
+    complexity: str = 'simple'
+    type: str
+    due_date: str = None
+    priority: str = 'low'
+    repeatable: bool = False
+
+# Response model for task operations
+class TaskResponse(BaseModel):
+    """Model for task operation response"""
+    success: bool
+    message: str
+    task_id: int = None
 
 # Add a tool to list tasks with 'to-do' status
 @mcp.tool()
@@ -67,5 +69,54 @@ def list_pending_tasks() -> TaskList:
         ]
 
         return TaskList(tasks=task_list)
+    finally:
+        session.close()
+
+@mcp.tool()
+def add_task(task_data: AddTaskRequest) -> TaskResponse:
+    """Add a new task to the system"""
+    session = DBSession()
+    try:
+        new_task = TaskModel(
+            name=task_data.name,
+            complexity=task_data.complexity,
+            type=task_data.type,
+            due_date=task_data.due_date,
+            priority=task_data.priority,
+            repeatable=task_data.repeatable,
+            status="pending"  # Default status for new tasks
+        )
+        session.add(new_task)
+        session.commit()
+        return TaskResponse(
+            success=True,
+            message=f"Task '{task_data.name}' added successfully",
+            task_id=new_task.id
+        )
+    except Exception as e:
+        session.rollback()
+        return TaskResponse(success=False, message=f"Failed to add task: {str(e)}")
+    finally:
+        session.close()
+
+@mcp.tool()
+def mark_task_done(task_name: str) -> TaskResponse:
+    """Mark a task as done by its name"""
+    session = DBSession()
+    try:
+        task = session.query(TaskModel).filter(TaskModel.name == task_name).first()
+        if not task:
+            return TaskResponse(success=False, message=f"Task with ID {task_id} not found")
+        
+        task.status = "done"
+        session.commit()
+        return TaskResponse(
+            success=True,
+            message=f"Task '{task.name}' marked as done",
+            task_id=task.id
+        )
+    except Exception as e:
+        session.rollback()
+        return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
     finally:
         session.close()
