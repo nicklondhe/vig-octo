@@ -1,5 +1,5 @@
 '''MCP server example with a tool and a dynamic resource'''
-from typing import List
+from typing import List, Optional
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 from sqlalchemy import create_engine
@@ -93,7 +93,7 @@ def add_task(task_data: AddTaskRequest) -> TaskResponse:
             message=f"Task '{task_data.name}' added successfully",
             task_id=new_task.id
         )
-    except Exception as e:
+    except Exception as e: #pylint: disable=broad-except
         session.rollback()
         return TaskResponse(success=False, message=f"Failed to add task: {str(e)}")
     finally:
@@ -106,8 +106,8 @@ def mark_task_done(task_name: str) -> TaskResponse:
     try:
         task = session.query(TaskModel).filter(TaskModel.name == task_name).first()
         if not task:
-            return TaskResponse(success=False, message=f"Task with ID {task_id} not found")
-        
+            return TaskResponse(success=False, message=f"Task with name {task_name} not found")
+
         task.status = "done"
         session.commit()
         return TaskResponse(
@@ -115,7 +115,7 @@ def mark_task_done(task_name: str) -> TaskResponse:
             message=f"Task '{task.name}' marked as done",
             task_id=task.id
         )
-    except Exception as e:
+    except Exception as e: #pylint: disable=broad-except
         session.rollback()
         return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
     finally:
