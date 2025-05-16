@@ -30,7 +30,7 @@ class AddTaskRequest(BaseModel):
     name: str
     complexity: str = 'simple'
     type: str
-    due_date: str = None
+    due_date: Optional[str] = None
     priority: str = 'low'
     repeatable: bool = False
 
