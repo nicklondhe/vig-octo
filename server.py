@@ -63,6 +63,8 @@ def list_pending_tasks() -> TaskList:
                 'priority': task.priority,
                 'repeatable': task.repeatable,
                 'status': task.status,
+                'created': task.created_ts,
+                'updated': task.updated_ts,
                 'context': config['env_type']  # Add environment type as context
             }
             for task in tasks
@@ -118,5 +120,39 @@ def mark_task_done(task_name: str) -> TaskResponse:
     except Exception as e: #pylint: disable=broad-except
         session.rollback()
         return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def list_completed_repeatable_tasks() -> TaskList:
+    """List all completed tasks that are marked as repeatable"""
+    session = DBSession()
+    try:
+        # Query tasks with status 'done' and repeatable=True
+        tasks = (
+            session.query(TaskModel)
+            .filter(TaskModel.status == 'done')
+            .filter(TaskModel.repeatable.is_(True))
+            .all()
+        )
+
+        # Convert to dictionary format for response
+        task_list = [
+            {
+                'id': task.id,
+                'name': task.name,
+                'complexity': task.complexity,
+                'type': task.type,
+                'due_date': task.due_date,
+                'priority': task.priority,
+                'repeatable': task.repeatable,
+                'status': task.status,
+                'context': config['env_type']
+            }
+            for task in tasks
+        ]
+
+        return TaskList(tasks=task_list)
     finally:
         session.close()

@@ -22,6 +22,8 @@ class TaskModel(Base):
     repeatable = Column(Boolean, default=False)
     status = Column(String(10), nullable=False, default='pending')
     next_scheduled = Column(Date)
+    created_ts = Column(DateTime)
+    updated_ts = Column(DateTime)
 
 class RecommendationModel(Base):
     '''RecommendationModel is a model for the recommendation table in the database'''
@@ -70,6 +72,8 @@ class Task(BaseModel):
     repeatable: bool = False
     status: str = 'pending'
     next_scheduled: Optional[datetime] = None
+    created_ts: Optional[datetime] = None
+    updated_ts: Optional[datetime] = None
 
     class Config:
         '''orm mode allows Pydantic to work with SQLAlchemy models'''
