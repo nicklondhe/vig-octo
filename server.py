@@ -1,5 +1,6 @@
 '''MCP server example with a tool and a dynamic resource'''
 from typing import List, Optional
+from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 from sqlalchemy import create_engine
@@ -29,10 +30,21 @@ class AddTaskRequest(BaseModel):
     """Model for task creation request"""
     name: str
     complexity: str = 'simple'
-    type: str
+    type: str = 'Direct'
     due_date: Optional[str] = None
     priority: str = 'low'
     repeatable: bool = False
+
+# Request model for updating a task
+class UpdateTaskRequest(BaseModel):
+    """Model for task update request with all fields optional"""
+    name: Optional[str] = None
+    complexity: Optional[str] = None
+    type: Optional[str] = None
+    due_date: Optional[str] = None
+    priority: Optional[str] = None
+    repeatable: Optional[bool] = None
+    status: Optional[str] = None
 
 # Response model for task operations
 class TaskResponse(BaseModel):
@@ -86,7 +98,9 @@ def add_task(task_data: AddTaskRequest) -> TaskResponse:
             due_date=task_data.due_date,
             priority=task_data.priority,
             repeatable=task_data.repeatable,
-            status="pending"  # Default status for new tasks
+            status="pending",  # Default status for new tasks
+            created_ts=datetime.now(timezone.utc),
+            updated_ts=datetime.now(timezone.utc)
         )
         session.add(new_task)
         session.commit()
@@ -102,26 +116,16 @@ def add_task(task_data: AddTaskRequest) -> TaskResponse:
         session.close()
 
 @mcp.tool()
-def mark_task_done(task_name: str) -> TaskResponse:
-    """Mark a task as done by its name"""
-    session = DBSession()
-    try:
-        task = session.query(TaskModel).filter(TaskModel.name == task_name).first()
-        if not task:
-            return TaskResponse(success=False, message=f"Task with name {task_name} not found")
-
-        task.status = "done"
-        session.commit()
-        return TaskResponse(
-            success=True,
-            message=f"Task '{task.name}' marked as done",
-            task_id=task.id
-        )
-    except Exception as e: #pylint: disable=broad-except
-        session.rollback()
-        return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
-    finally:
-        session.close()
+def mark_task_status(task_id: int, status: str = "done") -> TaskResponse:
+    """Mark a task with a specific status by its ID
+    
+    Status can be 'done' or 'pending' or any other valid status.
+    """
+    # Create update request with only status field
+    task_data = UpdateTaskRequest(status=status)
+    
+    # Use the update_task functionality internally
+    return update_task(task_id, task_data)
 
 
 @mcp.tool()
@@ -154,5 +158,37 @@ def list_completed_repeatable_tasks() -> TaskList:
         ]
 
         return TaskList(tasks=task_list)
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
+    """Update an existing task with provided fields"""
+    session = DBSession()
+    try:
+        task = session.query(TaskModel).filter(TaskModel.id == task_id).first()
+        if not task:
+            return TaskResponse(success=False, message=f"Task with ID {task_id} not found")
+
+        # Convert the request data to a dictionary and filter out None values
+        updates = {k: v for k, v in task_data.dict().items() if v is not None}
+        
+        # Apply the updates to the task
+        for key, value in updates.items():
+            setattr(task, key, value)
+            
+        # Always update the updated_ts timestamp when a task is modified
+        task.updated_ts = datetime.now(timezone.utc)
+        
+        session.commit()
+        return TaskResponse(
+            success=True,
+            message=f"Task with ID {task_id} updated successfully",
+            task_id=task.id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        session.rollback()
+        return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
     finally:
         session.close()
