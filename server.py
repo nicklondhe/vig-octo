@@ -10,6 +10,7 @@ from models import (
     GoalProgressHistoryModel, Base
 )
 from config import get_version, get_config
+from collections import defaultdict
 
 # Get configuration
 config = get_config()
@@ -106,6 +107,13 @@ class GoalProgressInfoResponse(BaseModel):
     title: Optional[str] = None
     current_completion_pct: float
     history: List[dict[str, object]] = []
+
+# Request model for task matrix view
+class TaskMatrixResponse(BaseModel):
+    """Model for task matrix view response with tasks organized by priority and complexity"""
+    low: dict[str, List[dict[str, object]]]
+    medium: dict[str, List[dict[str, object]]]
+    high: dict[str, List[dict[str, object]]]
 
 # Helper functions for goal-related operations
 
@@ -408,6 +416,69 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
     except Exception as e:  # pylint: disable=broad-except
         session.rollback()
         return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
+    finally:
+        session.close()
+
+@mcp.tool()
+def get_task_matrix_view(limit: int = 10, sort_by: str = "created_desc") -> TaskMatrixResponse:
+    """Get tasks organized in a 3x3 matrix by priority and complexity.
+    
+    Args:
+        limit: Maximum number of tasks to return
+        sort_by: How to sort tasks
+            - 'created_desc': Newest first (default)
+            - 'created_asc': Oldest first
+            - 'priority_desc': High priority first
+            - 'updated_desc': Recently touched first
+    
+    Returns:
+        A dictionary with tasks organized by priority and complexity
+    """
+    session = DBSession()
+    try:
+        # Define valid sort orders
+        sort_orders = {
+            "created_desc": TaskModel.created_ts.desc(),
+            "created_asc": TaskModel.created_ts.asc(),
+            "priority_desc": TaskModel.priority.desc(),
+            "updated_desc": TaskModel.updated_ts.desc()
+        }
+        
+        # Use default sort if invalid sort_by is provided
+        sort_order = sort_orders.get(sort_by, sort_orders["created_desc"])
+        
+        # Query pending tasks with the specified sort order
+        tasks = (session.query(TaskModel)
+                .filter(TaskModel.status == 'pending')
+                .order_by(sort_order)
+                .limit(limit)
+                .all())
+        
+        # Use nested defaultdict to automatically create bins
+        matrix = defaultdict(lambda: defaultdict(list))
+        
+        # Group tasks by priority and complexity
+        for task in tasks:
+            matrix[task.priority][task.complexity].append({
+                'id': task.id,
+                'name': task.name,
+                'complexity': task.complexity,
+                'type': task.type,
+                'due_date': task.due_date,
+                'priority': task.priority,
+                'repeatable': task.repeatable,
+                'status': task.status,
+                'created': task.created_ts,
+                'updated': task.updated_ts,
+                'context': config['env_type']
+            })
+        
+        # Convert defaultdict to regular dict for serialization
+        return TaskMatrixResponse(
+            low=dict(matrix["low"]),
+            medium=dict(matrix["medium"]),
+            high=dict(matrix["high"])
+        )
     finally:
         session.close()
 
