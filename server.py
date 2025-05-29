@@ -471,6 +471,12 @@ def get_task_matrix_view(limit: int = 10, sort_by: str = "created_desc") -> Task
         for task in tasks:
             matrix[task.priority][task.complexity].append(_serialize_task(task))
         
+        # Ensure all nine cells exist by initializing empty lists for missing cells
+        for priority in ["low", "medium", "high"]:
+            for complexity in ["low", "medium", "high"]:
+                if complexity not in matrix[priority]:
+                    matrix[priority][complexity] = []
+        
         # Convert defaultdict to regular dict for serialization
         return TaskMatrixResponse(
             low=dict(matrix["low"]),
