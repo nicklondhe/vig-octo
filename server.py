@@ -220,11 +220,11 @@ def _update_goal_progress(session, task_id, goal_id, task_completion_pct=100.0, 
         return None
 
 
-def _serialize_task(task):
+def _serialize_task(task: TaskModel):
     """Helper method to serialize a TaskModel into a dictionary.
     
     Args:
-        task: The TaskModel instance to serialize
+        task (TaskModel): The TaskModel instance to serialize
         
     Returns:
         dict: A dictionary representation of the task
