@@ -1,15 +1,21 @@
 '''MCP server example with a tool and a dynamic resource'''
-from typing import List, Optional
+# Standard library imports
+from collections import defaultdict
 from datetime import datetime, timezone, timedelta
+from typing import List, Optional
+
+# Third-party imports
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+
+# Local application imports
+from config import get_version, get_config
 from models import (
     TaskModel, WeeklyGoalModel, GoalTaskModel,
     GoalProgressHistoryModel, Base
 )
-from config import get_version, get_config
 
 # Get configuration
 config = get_config()
@@ -106,6 +112,13 @@ class GoalProgressInfoResponse(BaseModel):
     title: Optional[str] = None
     current_completion_pct: float
     history: List[dict[str, object]] = []
+
+# Request model for task matrix view
+class TaskMatrixResponse(BaseModel):
+    """Model for task matrix view response with tasks organized by priority and complexity"""
+    low: dict[str, List[dict[str, object]]]
+    medium: dict[str, List[dict[str, object]]]
+    high: dict[str, List[dict[str, object]]]
 
 # Helper functions for goal-related operations
 
@@ -207,6 +220,30 @@ def _update_goal_progress(session, task_id, goal_id, task_completion_pct=100.0, 
         return None
 
 
+def _serialize_task(task: TaskModel):
+    """Helper method to serialize a TaskModel into a dictionary.
+    
+    Args:
+        task (TaskModel): The TaskModel instance to serialize
+        
+    Returns:
+        dict: A dictionary representation of the task
+    """
+    return {
+        'id': task.id,
+        'name': task.name,
+        'complexity': task.complexity,
+        'type': task.type,
+        'due_date': task.due_date,
+        'priority': task.priority,
+        'repeatable': task.repeatable,
+        'status': task.status,
+        'created': task.created_ts,
+        'updated': task.updated_ts,
+        'context': config['env_type']
+    }
+
+
 # Add a tool to list tasks with 'to-do' status
 @mcp.tool()
 def list_pending_tasks() -> TaskList:
@@ -220,19 +257,7 @@ def list_pending_tasks() -> TaskList:
 
         # Convert to dictionary format for response
         task_list = [
-            {
-                'id': task.id,
-                'name': task.name,
-                'complexity': task.complexity,
-                'type': task.type,
-                'due_date': task.due_date,
-                'priority': task.priority,
-                'repeatable': task.repeatable,
-                'status': task.status,
-                'created': task.created_ts,
-                'updated': task.updated_ts,
-                'context': config['env_type']  # Add environment type as context
-            }
+            _serialize_task(task)
             for task in tasks
         ]
 
@@ -333,17 +358,7 @@ def list_completed_repeatable_tasks() -> TaskList:
 
         # Convert to dictionary format for response
         task_list = [
-            {
-                'id': task.id,
-                'name': task.name,
-                'complexity': task.complexity,
-                'type': task.type,
-                'due_date': task.due_date,
-                'priority': task.priority,
-                'repeatable': task.repeatable,
-                'status': task.status,
-                'context': config['env_type']
-            }
+            _serialize_task(task)
             for task in tasks
         ]
 
@@ -408,6 +423,66 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
     except Exception as e:  # pylint: disable=broad-except
         session.rollback()
         return TaskResponse(success=False, message=f"Failed to update task: {str(e)}")
+    finally:
+        session.close()
+
+@mcp.tool()
+def get_task_matrix_view(limit: int = 10, sort_by: str = "created_desc") -> TaskMatrixResponse:
+    """Get tasks organized in a 3x3 matrix by priority and complexity.
+    This function retrieves tasks with 'pending' status and organizes them into a matrix
+    based on their priority and complexity. The matrix has three priority levels (low, medium, high)
+    and three complexity levels (low, medium, high).
+    
+    Args:
+        limit: Maximum number of tasks to return
+        sort_by: How to sort tasks
+            - 'created_desc': Newest first (default)
+            - 'created_asc': Oldest first
+            - 'priority_desc': High priority first
+            - 'updated_desc': Recently touched first
+    
+    Returns:
+        A dictionary with tasks organized by priority and complexity
+    """
+    session = DBSession()
+    try:
+        # Define valid sort orders
+        sort_orders = {
+            "created_desc": TaskModel.created_ts.desc(),
+            "created_asc": TaskModel.created_ts.asc(),
+            "priority_desc": TaskModel.priority.desc(),
+            "updated_desc": TaskModel.updated_ts.desc()
+        }
+        
+        # Use default sort if invalid sort_by is provided
+        sort_order = sort_orders.get(sort_by, sort_orders["created_desc"])
+        
+        # Query pending tasks with the specified sort order
+        tasks = (session.query(TaskModel)
+                .filter(TaskModel.status == 'pending')
+                .order_by(sort_order)
+                .limit(limit)
+                .all())
+        
+        # Use nested defaultdict to automatically create bins
+        matrix = defaultdict(lambda: defaultdict(list))
+        
+        # Group tasks by priority and complexity
+        for task in tasks:
+            matrix[task.priority][task.complexity].append(_serialize_task(task))
+        
+        # Ensure all nine cells exist by initializing empty lists for missing cells
+        for priority in ["low", "medium", "high"]:
+            for complexity in ["low", "medium", "high"]:
+                if complexity not in matrix[priority]:
+                    matrix[priority][complexity] = []
+        
+        # Convert defaultdict to regular dict for serialization
+        return TaskMatrixResponse(
+            low=dict(matrix["low"]),
+            medium=dict(matrix["medium"]),
+            high=dict(matrix["high"])
+        )
     finally:
         session.close()
 
