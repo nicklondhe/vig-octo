@@ -14,7 +14,8 @@ from sqlalchemy.orm import sessionmaker
 from config import get_version, get_config
 from models import (
     TaskModel, WeeklyGoalModel, GoalTaskModel,
-    GoalProgressHistoryModel, Base
+    GoalProgressHistoryModel, WorkSessionModel, 
+    RecommendationModel, WorkLogModel, Base
 )
 
 # Get configuration
@@ -104,6 +105,72 @@ class GoalProgressResponse(BaseModel):
     goal_id: Optional[int] = None
     current_completion_pct: Optional[float] = None
 
+# Request model for saving recommendations
+class SaveRecommendationsRequest(BaseModel):
+    """Model for saving task recommendations for a session"""
+    session_id: int
+    task_ids: List[int]
+    rec_type: str = "focus_tasks"  # "focus_tasks", "break_tasks", etc.
+    strategy: Optional[str] = None  # "high_priority_first", "mix_complexity", etc.
+
+# Request model for updating recommendation status
+class UpdateRecommendationStatusRequest(BaseModel):
+    """Model for updating the status of a recommendation"""
+    recommendation_id: int
+    status: str  # "pending", "accepted", "rejected"
+    rejected_reason: Optional[str] = None  # Required if status is "rejected"
+
+# Request model for starting a work log
+class StartWorkLogRequest(BaseModel):
+    """Model for starting a work log entry"""
+    session_id: int
+    task_id: int
+    recommendation_id: Optional[int] = None
+
+# Request model for ending a work log
+class EndWorkLogRequest(BaseModel):
+    """Model for ending a work log entry with completion percentage"""
+    work_log_id: int
+    completion_pct: float = 0.0  # 0.0 to 100.0
+
+# Request model for ending a session
+class EndSessionRequest(BaseModel):
+    """Model for ending a work session with effectiveness rating"""
+    session_id: int
+    completion_pct: float = 0.0  # 0.0 to 100.0
+    effectiveness_rating: Optional[int] = None  # 1-5 rating
+    notes: Optional[str] = None
+
+# Request model for getting velocity stats
+class VelocityStatsRequest(BaseModel):
+    """Model for getting velocity stats for a given time frame"""
+    days: int = 7  # Default to last 7 days
+    task_type: Optional[str] = None  # Filter by task type
+
+# Response model for recommendation operations
+class RecommendationResponse(BaseModel):
+    """Model for recommendation operation response"""
+    success: bool
+    message: str
+    session_id: int
+    recommendations: List[dict[str, object]] = []
+
+# Response model for work log operations
+class WorkLogResponse(BaseModel):
+    """Model for work log operation response"""
+    success: bool
+    message: str
+    session_id: int
+    work_log: Optional[dict[str, object]] = None
+
+# Response model for velocity stats
+class VelocityStatsResponse(BaseModel):
+    """Model for velocity stats response"""
+    success: bool
+    message: str
+    time_frame_days: int
+    stats: dict[str, object]
+
 # Response model for getting goal progress
 class GoalProgressInfoResponse(BaseModel):
     """Model for goal progress information response"""
@@ -112,6 +179,34 @@ class GoalProgressInfoResponse(BaseModel):
     title: Optional[str] = None
     current_completion_pct: float
     history: List[dict[str, object]] = []
+
+# Request model for starting a work session
+class StartSessionRequest(BaseModel):
+    """Model for starting a new work session"""
+    query: str
+    context: Optional[str] = None
+    planned_duration: Optional[int] = None  # minutes
+
+# Response model for session operations
+class SessionResponse(BaseModel):
+    """Model for session operation response"""
+    success: bool
+    message: str
+    session_id: Optional[int] = None
+
+# Response model for session listing
+class SessionListResponse(BaseModel):
+    """Model for session list response"""
+    sessions: List[dict[str, object]]
+
+# Response model for session details
+class SessionDetailsResponse(BaseModel):
+    """Model for detailed session information including tasks and recommendations"""
+    success: bool
+    session: Optional[dict[str, object]] = None
+    tasks: List[dict[str, object]] = []
+    recommendations: List[dict[str, object]] = []
+    work_logs: List[dict[str, object]] = []
 
 # Request model for task matrix view
 class TaskMatrixResponse(BaseModel):
@@ -241,6 +336,71 @@ def _serialize_task(task: TaskModel):
         'created': task.created_ts,
         'updated': task.updated_ts,
         'context': config['env_type']
+    }
+
+
+def _serialize_session(session: WorkSessionModel):
+    """Helper method to serialize a WorkSessionModel into a dictionary.
+    
+    Args:
+        session (WorkSessionModel): The WorkSessionModel instance to serialize
+        
+    Returns:
+        dict: A dictionary representation of the session
+    """
+    return {
+        'id': session.id,
+        'start_ts': session.start_ts,
+        'end_ts': session.end_ts,
+        'planned_duration': session.planned_duration,
+        'context': session.context,
+        'query': session.query,
+        'completion_pct': session.completion_pct,
+        'effectiveness_rating': session.effectiveness_rating,
+        'notes': session.notes
+    }
+
+
+def _serialize_recommendation(recommendation):
+    """Helper method to serialize a RecommendationModel into a dictionary.
+    
+    Args:
+        recommendation: The RecommendationModel instance to serialize
+        
+    Returns:
+        dict: A dictionary representation of the recommendation
+    """
+    return {
+        'id': recommendation.id,
+        'session_id': recommendation.session_id,
+        'task_id': recommendation.task_id,
+        'rec_type': recommendation.rec_type,
+        'strategy': recommendation.strategy,
+        'status': recommendation.status,
+        'rejected_reason': recommendation.rejected_reason,
+        'rec_ts': recommendation.rec_ts,
+        'task_name': recommendation.task.name if recommendation.task else None
+    }
+
+
+def _serialize_work_log(work_log):
+    """Helper method to serialize a WorkLogModel into a dictionary.
+    
+    Args:
+        work_log: The WorkLogModel instance to serialize
+        
+    Returns:
+        dict: A dictionary representation of the work log
+    """
+    return {
+        'id': work_log.id,
+        'session_id': work_log.session_id,
+        'task_id': work_log.task_id,
+        'rec_id': work_log.rec_id,
+        'start_ts': work_log.start_ts,
+        'end_ts': work_log.end_ts,
+        'completion_pct': work_log.completion_pct,
+        'task_name': work_log.task.name if work_log.task else None
     }
 
 
@@ -633,6 +793,655 @@ def create_weekly_goal(goal_data: AddWeeklyGoalRequest) -> WeeklyGoalResponse:
         return WeeklyGoalResponse(success=False, message=f"Failed to add weekly goal: {str(e)}")
     finally:
         session.close()
+
+
+@mcp.tool()
+def get_session_details(session_id: int) -> SessionDetailsResponse:
+    """Get detailed information about a specific work session including tasks and recommendations
+    
+    Args:
+        session_id: The ID of the session to retrieve
+        
+    Returns:
+        Detailed session information including associated tasks and recommendations
+    """
+    db_session = DBSession()
+    try:
+        # Get the session
+        session = db_session.query(WorkSessionModel).filter(
+            WorkSessionModel.id == session_id
+        ).first()
+        
+        if not session:
+            return SessionDetailsResponse(
+                success=False,
+                session=None,
+                tasks=[],
+                recommendations=[],
+                work_logs=[]
+            )
+        
+        # Get recommendations for this session
+        recommendations = db_session.query(RecommendationModel).filter(
+            RecommendationModel.session_id == session_id
+        ).all()
+        
+        # Get work logs for this session
+        work_logs = db_session.query(WorkLogModel).filter(
+            WorkLogModel.session_id == session_id
+        ).all()
+        
+        # Get the unique task IDs from both recommendations and work logs
+        task_ids = set()
+        for rec in recommendations:
+            task_ids.add(rec.task_id)
+        for log in work_logs:
+            task_ids.add(log.task_id)
+        
+        # Get the tasks
+        tasks = db_session.query(TaskModel).filter(
+            TaskModel.id.in_(list(task_ids))
+        ).all() if task_ids else []
+        
+        # Serialize the data
+        return SessionDetailsResponse(
+            success=True,
+            session=_serialize_session(session),
+            tasks=[_serialize_task(task) for task in tasks],
+            recommendations=[_serialize_recommendation(rec) for rec in recommendations],
+            work_logs=[_serialize_work_log(log) for log in work_logs]
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        # Log the error
+        print(f"Error getting session details: {str(e)}")
+        return SessionDetailsResponse(
+            success=False,
+            session=None,
+            tasks=[],
+            recommendations=[],
+            work_logs=[]
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def get_sessions(limit: int = 10, days: Optional[int] = None) -> SessionListResponse:
+    """Get a list of work sessions with optional time frame filter
+    
+    Args:
+        limit: Maximum number of sessions to return (default: 10)
+        days: Number of days to look back (optional, default: all sessions)
+        
+    Returns:
+        A list of session objects
+    """
+    db_session = DBSession()
+    try:
+        # Start with base query
+        query = db_session.query(WorkSessionModel)
+        
+        # Apply time frame filter if days parameter is provided
+        if days is not None:
+            # Calculate the date N days ago
+            cutoff_date = datetime.now(timezone.utc) - timedelta(days=days)
+            query = query.filter(WorkSessionModel.start_ts >= cutoff_date)
+        
+        # Get most recent sessions first
+        sessions = query.order_by(WorkSessionModel.start_ts.desc()).limit(limit).all()
+        
+        # Convert to dictionary format for response
+        session_list = [_serialize_session(session) for session in sessions]
+        
+        return SessionListResponse(sessions=session_list)
+    except Exception as e:  # pylint: disable=broad-except
+        # Log the error but return an empty list rather than failing
+        print(f"Error fetching sessions: {str(e)}")
+        return SessionListResponse(sessions=[])
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def get_velocity_stats(stats_data: VelocityStatsRequest) -> VelocityStatsResponse:
+    """Get productivity and velocity stats for a given time frame
+    
+    Args:
+        stats_data: Data containing days (time frame) and optional task_type filter
+        
+    Returns:
+        A response with velocity statistics for the specified time frame
+    """
+    db_session = DBSession()
+    try:
+        # Calculate the date for the start of the time frame
+        cutoff_date = datetime.now(timezone.utc) - timedelta(days=stats_data.days)
+        
+        # Build base query for completed work logs
+        work_logs_query = db_session.query(WorkLogModel).filter(
+            WorkLogModel.start_ts >= cutoff_date,
+            WorkLogModel.end_ts.isnot(None)
+        )
+        
+        # Build base query for sessions
+        sessions_query = db_session.query(WorkSessionModel).filter(
+            WorkSessionModel.start_ts >= cutoff_date,
+            WorkSessionModel.end_ts.isnot(None)
+        )
+        
+        # Apply task type filter if specified
+        if stats_data.task_type:
+            # Get task IDs with the specified type
+            task_ids = [
+                task.id for task in 
+                db_session.query(TaskModel.id).filter(
+                    TaskModel.type == stats_data.task_type
+                ).all()
+            ]
+            
+            # Filter work logs by these task IDs
+            work_logs_query = work_logs_query.filter(
+                WorkLogModel.task_id.in_(task_ids)
+            )
+        
+        # Execute the queries
+        work_logs = work_logs_query.all()
+        sessions = sessions_query.all()
+        
+        # Calculate stats
+        
+        # 1. Total time spent on tasks in minutes
+        total_time_minutes = 0
+        for log in work_logs:
+            if log.end_ts and log.start_ts:
+                time_diff = (log.end_ts - log.start_ts).total_seconds() / 60
+                total_time_minutes += time_diff
+        
+        # 2. Average completion percentage of tasks
+        avg_completion = 0
+        if work_logs:
+            completion_sum = sum(log.completion_pct or 0 for log in work_logs)
+            avg_completion = completion_sum / len(work_logs)
+        
+        # 3. Number of completed tasks
+        completed_tasks = len(set(log.task_id for log in work_logs 
+                               if log.completion_pct and log.completion_pct >= 90))
+        
+        # 4. Average task completion time in minutes
+        avg_task_time = 0
+        if completed_tasks > 0:
+            avg_task_time = total_time_minutes / completed_tasks
+        
+        # 5. Average session effectiveness rating
+        avg_effectiveness = 0
+        rated_sessions = [s for s in sessions if s.effectiveness_rating is not None]
+        if rated_sessions:
+            avg_effectiveness = sum(s.effectiveness_rating for s in rated_sessions) / len(rated_sessions)
+        
+        # 6. Productivity by day of week
+        weekday_productivity = {i: 0 for i in range(7)}  # 0 = Monday, 6 = Sunday
+        for log in work_logs:
+            if log.end_ts and log.start_ts:
+                weekday = log.start_ts.weekday()
+                time_diff = (log.end_ts - log.start_ts).total_seconds() / 60
+                weekday_productivity[weekday] += time_diff
+        
+        # 7. Total number of sessions
+        total_sessions = len(sessions)
+        
+        # Compile stats
+        stats = {
+            "total_time_minutes": int(total_time_minutes),
+            "avg_completion_pct": round(avg_completion, 2),
+            "completed_tasks": completed_tasks,
+            "avg_task_time_minutes": round(avg_task_time, 2),
+            "avg_effectiveness_rating": round(avg_effectiveness, 2),
+            "weekday_productivity": weekday_productivity,
+            "total_sessions": total_sessions,
+            "tasks_per_day": round(completed_tasks / stats_data.days, 2) if stats_data.days > 0 else 0,
+            "minutes_per_day": round(total_time_minutes / stats_data.days, 2) if stats_data.days > 0 else 0
+        }
+        
+        return VelocityStatsResponse(
+            success=True,
+            message=f"Velocity stats for the last {stats_data.days} days",
+            time_frame_days=stats_data.days,
+            stats=stats
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return VelocityStatsResponse(
+            success=False,
+            message=f"Failed to get velocity stats: {str(e)}",
+            time_frame_days=stats_data.days,
+            stats={}
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def end_session(end_data: EndSessionRequest) -> SessionResponse:
+    """End a work session with completion percentage and effectiveness rating
+    
+    Args:
+        end_data: Data containing session_id, completion_pct, effectiveness_rating, and notes
+        
+    Returns:
+        A response indicating success or failure with the updated session
+    """
+    db_session = DBSession()
+    try:
+        # Verify the session exists and is not already ended
+        session = db_session.query(WorkSessionModel).filter(
+            WorkSessionModel.id == end_data.session_id
+        ).first()
+        
+        if not session:
+            return SessionResponse(
+                success=False,
+                message=f"Session with ID {end_data.session_id} not found",
+                session_id=end_data.session_id
+            )
+        
+        # Check if the session is already ended
+        if session.end_ts is not None:
+            return SessionResponse(
+                success=False,
+                message=f"Session with ID {end_data.session_id} is already ended",
+                session_id=end_data.session_id
+            )
+        
+        # Update the session with end time, completion percentage, rating, and notes
+        now = datetime.now(timezone.utc)
+        session.end_ts = now
+        session.completion_pct = end_data.completion_pct
+        
+        if end_data.effectiveness_rating is not None:
+            session.effectiveness_rating = end_data.effectiveness_rating
+            
+        if end_data.notes is not None:
+            session.notes = end_data.notes
+        
+        # Close any open work logs for this session
+        open_logs = db_session.query(WorkLogModel).filter(
+            WorkLogModel.session_id == end_data.session_id,
+            WorkLogModel.end_ts.is_(None)
+        ).all()
+        
+        for log in open_logs:
+            log.end_ts = now
+            # If no completion percentage is set, default to the session's completion
+            if log.completion_pct is None:
+                log.completion_pct = end_data.completion_pct
+        
+        # Commit the transaction
+        db_session.commit()
+        
+        return SessionResponse(
+            success=True,
+            message=f"Session ended with {end_data.completion_pct}% completion",
+            session_id=end_data.session_id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        db_session.rollback()
+        return SessionResponse(
+            success=False,
+            message=f"Failed to end session: {str(e)}",
+            session_id=end_data.session_id
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def end_work_log(end_data: EndWorkLogRequest) -> WorkLogResponse:
+    """End a work log entry with completion percentage
+    
+    Args:
+        end_data: Data containing work_log_id and completion_pct
+        
+    Returns:
+        A response indicating success or failure with the updated work log
+    """
+    db_session = DBSession()
+    try:
+        # Verify the work log exists and is not already ended
+        work_log = db_session.query(WorkLogModel).filter(
+            WorkLogModel.id == end_data.work_log_id
+        ).first()
+        
+        if not work_log:
+            return WorkLogResponse(
+                success=False,
+                message=f"Work log with ID {end_data.work_log_id} not found",
+                session_id=0
+            )
+        
+        # Check if the work log is already ended
+        if work_log.end_ts is not None:
+            return WorkLogResponse(
+                success=False,
+                message=f"Work log with ID {end_data.work_log_id} is already ended",
+                session_id=work_log.session_id
+            )
+        
+        # Get the task for this work log
+        task = db_session.query(TaskModel).filter(
+            TaskModel.id == work_log.task_id
+        ).first()
+        
+        if not task:
+            return WorkLogResponse(
+                success=False,
+                message=f"Task with ID {work_log.task_id} not found",
+                session_id=work_log.session_id
+            )
+        
+        # Update the work log with end time and completion percentage
+        now = datetime.now(timezone.utc)
+        work_log.end_ts = now
+        work_log.completion_pct = end_data.completion_pct
+        
+        # If completion percentage is high (e.g., >= 90%), update task status to "done"
+        if end_data.completion_pct >= 90 and task.status != "done":
+            task.status = "done"
+            task.updated_ts = now
+        
+        # Update task summary if it exists
+        summary = db_session.query(TaskSummaryModel).filter(
+            TaskSummaryModel.task_id == work_log.task_id
+        ).first()
+        
+        if summary:
+            # Calculate time worked in minutes
+            time_diff = (now - work_log.start_ts).total_seconds() / 60
+            summary.time_worked += int(time_diff)
+            summary.updated_ts = now
+        else:
+            # Create a new task summary
+            time_diff = (now - work_log.start_ts).total_seconds() / 60
+            summary = TaskSummaryModel(
+                task_id=work_log.task_id,
+                time_worked=int(time_diff),
+                start_date=work_log.start_ts,
+                has_ended=False
+            )
+            db_session.add(summary)
+        
+        # Commit the transaction
+        db_session.commit()
+        
+        return WorkLogResponse(
+            success=True,
+            message=f"Work log ended for task '{task.name}' with {end_data.completion_pct}% completion",
+            session_id=work_log.session_id,
+            work_log=_serialize_work_log(work_log)
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        db_session.rollback()
+        return WorkLogResponse(
+            success=False,
+            message=f"Failed to end work log: {str(e)}",
+            session_id=0
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def start_work_log(log_data: StartWorkLogRequest) -> WorkLogResponse:
+    """Start a work log entry for a task within a session
+    
+    Args:
+        log_data: Data containing session_id, task_id, and optional recommendation_id
+        
+    Returns:
+        A response indicating success or failure with the created work log
+    """
+    db_session = DBSession()
+    try:
+        # Verify the session exists
+        session = db_session.query(WorkSessionModel).filter(
+            WorkSessionModel.id == log_data.session_id
+        ).first()
+        
+        if not session:
+            return WorkLogResponse(
+                success=False,
+                message=f"Session with ID {log_data.session_id} not found",
+                session_id=log_data.session_id
+            )
+        
+        # Verify the task exists
+        task = db_session.query(TaskModel).filter(
+            TaskModel.id == log_data.task_id
+        ).first()
+        
+        if not task:
+            return WorkLogResponse(
+                success=False,
+                message=f"Task with ID {log_data.task_id} not found",
+                session_id=log_data.session_id
+            )
+        
+        # If recommendation_id is provided, verify it exists
+        if log_data.recommendation_id is not None:
+            recommendation = db_session.query(RecommendationModel).filter(
+                RecommendationModel.id == log_data.recommendation_id
+            ).first()
+            
+            if not recommendation:
+                return WorkLogResponse(
+                    success=False,
+                    message=f"Recommendation with ID {log_data.recommendation_id} not found",
+                    session_id=log_data.session_id
+                )
+        
+        # Create a new work log entry
+        now = datetime.now(timezone.utc)
+        new_log = WorkLogModel(
+            session_id=log_data.session_id,
+            task_id=log_data.task_id,
+            rec_id=log_data.recommendation_id,
+            start_ts=now
+        )
+        
+        db_session.add(new_log)
+        db_session.commit()
+        
+        return WorkLogResponse(
+            success=True,
+            message=f"Work log started for task '{task.name}'",
+            session_id=log_data.session_id,
+            work_log=_serialize_work_log(new_log)
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        db_session.rollback()
+        return WorkLogResponse(
+            success=False,
+            message=f"Failed to start work log: {str(e)}",
+            session_id=log_data.session_id
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def update_recommendation_status(status_data: UpdateRecommendationStatusRequest) -> RecommendationResponse:
+    """Update the status of a recommendation (accept or reject with reason)
+    
+    Args:
+        status_data: Data containing recommendation_id, status, and optional rejected_reason
+        
+    Returns:
+        A response indicating success or failure with the updated recommendation
+    """
+    db_session = DBSession()
+    try:
+        # Verify the recommendation exists
+        recommendation = db_session.query(RecommendationModel).filter(
+            RecommendationModel.id == status_data.recommendation_id
+        ).first()
+        
+        if not recommendation:
+            return RecommendationResponse(
+                success=False,
+                message=f"Recommendation with ID {status_data.recommendation_id} not found",
+                session_id=0
+            )
+        
+        # Update the status
+        recommendation.status = status_data.status
+        
+        # If status is rejected, ensure a reason is provided
+        if status_data.status == 'rejected':
+            if not status_data.rejected_reason:
+                return RecommendationResponse(
+                    success=False,
+                    message="A rejection reason is required when status is 'rejected'",
+                    session_id=recommendation.session_id
+                )
+            recommendation.rejected_reason = status_data.rejected_reason
+        
+        # Commit the transaction
+        db_session.commit()
+        
+        return RecommendationResponse(
+            success=True,
+            message=f"Recommendation status updated to '{status_data.status}'",
+            session_id=recommendation.session_id,
+            recommendations=[_serialize_recommendation(recommendation)]
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        db_session.rollback()
+        return RecommendationResponse(
+            success=False,
+            message=f"Failed to update recommendation status: {str(e)}",
+            session_id=0
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def save_recommendations(recommendation_data: SaveRecommendationsRequest) -> RecommendationResponse:
+    """Save task recommendations for a work session
+    
+    Args:
+        recommendation_data: Data containing session_id, task_ids, rec_type, and strategy
+        
+    Returns:
+        A response indicating success or failure with the created recommendations
+    """
+    db_session = DBSession()
+    try:
+        # Verify the session exists
+        session = db_session.query(WorkSessionModel).filter(
+            WorkSessionModel.id == recommendation_data.session_id
+        ).first()
+        
+        if not session:
+            return RecommendationResponse(
+                success=False,
+                message=f"Session with ID {recommendation_data.session_id} not found",
+                session_id=recommendation_data.session_id
+            )
+        
+        # Verify all tasks exist
+        tasks = db_session.query(TaskModel).filter(
+            TaskModel.id.in_(recommendation_data.task_ids)
+        ).all()
+        
+        found_task_ids = [task.id for task in tasks]
+        missing_task_ids = [
+            task_id for task_id in recommendation_data.task_ids 
+            if task_id not in found_task_ids
+        ]
+        
+        if missing_task_ids:
+            return RecommendationResponse(
+                success=False,
+                message=f"Tasks with IDs {missing_task_ids} not found",
+                session_id=recommendation_data.session_id
+            )
+        
+        # Create recommendation entries for each task
+        recommendations = []
+        now = datetime.now(timezone.utc)
+        
+        for task_id in recommendation_data.task_ids:
+            recommendation = RecommendationModel(
+                session_id=recommendation_data.session_id,
+                task_id=task_id,
+                rec_type=recommendation_data.rec_type,
+                strategy=recommendation_data.strategy,
+                rec_ts=now
+            )
+            db_session.add(recommendation)
+            recommendations.append(recommendation)
+        
+        db_session.flush()  # Flush to get the recommendation IDs
+        
+        # Commit the transaction
+        db_session.commit()
+        
+        # Serialize the recommendations
+        serialized_recommendations = [
+            _serialize_recommendation(rec) for rec in recommendations
+        ]
+        
+        return RecommendationResponse(
+            success=True,
+            message=f"Successfully saved {len(recommendations)} task recommendations",
+            session_id=recommendation_data.session_id,
+            recommendations=serialized_recommendations
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        db_session.rollback()
+        return RecommendationResponse(
+            success=False,
+            message=f"Failed to save recommendations: {str(e)}",
+            session_id=recommendation_data.session_id
+        )
+    finally:
+        db_session.close()
+
+
+@mcp.tool()
+def start_session(session_data: StartSessionRequest) -> SessionResponse:
+    """Start a new work session with the given query, context, and planned duration
+    
+    Args:
+        session_data: The session data containing query, context, and planned duration
+        
+    Returns:
+        A response indicating success or failure with the session ID
+    """
+    db_session = DBSession()
+    try:
+        # Create new work session
+        new_session = WorkSessionModel(
+            query=session_data.query,
+            context=session_data.context,
+            planned_duration=session_data.planned_duration,
+            start_ts=datetime.now(timezone.utc)
+        )
+        db_session.add(new_session)
+        db_session.commit()
+        
+        return SessionResponse(
+            success=True,
+            message="Work session started successfully",
+            session_id=new_session.id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        db_session.rollback()
+        return SessionResponse(
+            success=False, 
+            message=f"Failed to start work session: {str(e)}"
+        )
+    finally:
+        db_session.close()
 
 
 @mcp.tool()

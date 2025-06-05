@@ -53,6 +53,8 @@ class RecommendationModel(Base):
     task_id = Column(Integer, ForeignKey('task.id'))
     rec_type = Column(String)          # "focus_tasks", "break_tasks"
     strategy = Column(String)          # "high_priority_first", "mix_complexity"
+    status = Column(String, nullable=False, default='pending')  # "pending", "accepted", "rejected"
+    rejected_reason = Column(String)   # Reason if status is "rejected"
     rec_ts = Column(
         DateTime, nullable=False, default=datetime.now(timezone.utc)
     )
@@ -198,6 +200,8 @@ class Recommendation(BaseModel):
     task_id: int
     rec_type: Optional[str] = None
     strategy: Optional[str] = None
+    status: str = 'pending'  # "pending", "accepted", "rejected"
+    rejected_reason: Optional[str] = None
     rec_ts: datetime = datetime.now(timezone.utc)
 
     class Config:
