@@ -5,7 +5,7 @@ management system.
 from datetime import datetime, timezone
 from typing import Optional
 from sqlalchemy import (
-    Column, Integer, String, DateTime, ForeignKey, Boolean, Date, Float
+    Column, Integer, String, DateTime, ForeignKey, Boolean, Date, Float, Text
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship
@@ -13,6 +13,19 @@ from pydantic import BaseModel
 
 Base = declarative_base()
 
+class WorkSessionModel(Base):
+    '''WorkSessionModel is a model for the work_session table in the database'''
+    __tablename__ = 'work_session'
+
+    id = Column(Integer, primary_key=True)
+    start_ts = Column(DateTime, default=datetime.now(timezone.utc))
+    end_ts = Column(DateTime)
+    planned_duration = Column(Integer)  # minutes
+    context = Column(String)            # "90 minutes", "big tasks + breaks"
+    query = Column(Text)               # original user request
+    completion_pct = Column(Float)      # 0.0-1.0
+    effectiveness_rating = Column(Integer)  # 1-5
+    notes = Column(Text)
 
 class TaskModel(Base):
     '''TaskModel is a model for the task table in the database'''
@@ -36,11 +49,17 @@ class RecommendationModel(Base):
     __tablename__ = 'recommendation'
 
     id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey('work_session.id'))
     task_id = Column(Integer, ForeignKey('task.id'))
+    rec_type = Column(String)          # "focus_tasks", "break_tasks"
+    strategy = Column(String)          # "high_priority_first", "mix_complexity"
+    status = Column(String, nullable=False, default='pending')  # "pending", "accepted", "rejected"
+    rejected_reason = Column(String)   # Reason if status is "rejected"
     rec_ts = Column(
         DateTime, nullable=False, default=datetime.now(timezone.utc)
     )
     task = relationship('TaskModel', backref='recommendations')
+    session = relationship('WorkSessionModel', backref='recommendations')
 
 
 class WorkLogModel(Base):
@@ -48,14 +67,17 @@ class WorkLogModel(Base):
     __tablename__ = 'work_log'
 
     id = Column(Integer, primary_key=True)
+    session_id = Column(Integer, ForeignKey('work_session.id'))
     task_id = Column(Integer, ForeignKey('task.id'))
     rec_id = Column(Integer, ForeignKey('recommendation.id'))
     start_ts = Column(
         DateTime, nullable=False, default=datetime.now(timezone.utc)
     )
     end_ts = Column(DateTime)
+    completion_pct = Column(Float)     # per-task completion
     task = relationship('TaskModel', backref='worklogs')
     recommendation = relationship('RecommendationModel', backref='worklogs')
+    session = relationship('WorkSessionModel', backref='worklogs')
 
 
 class TaskSummaryModel(Base):
@@ -135,6 +157,23 @@ class GoalProgressHistoryModel(Base):
 # Pydantic Models
 
 
+class WorkSession(BaseModel):
+    '''WorkSession is a model for the work_session table in the database'''
+    id: Optional[int] = None
+    start_ts: datetime = datetime.now(timezone.utc)
+    end_ts: Optional[datetime] = None
+    planned_duration: Optional[int] = None  # minutes
+    context: Optional[str] = None
+    query: Optional[str] = None
+    completion_pct: Optional[float] = None
+    effectiveness_rating: Optional[int] = None
+    notes: Optional[str] = None
+
+    class Config:
+        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
+        from_attributes = True
+
+
 class Task(BaseModel):
     '''Task is a model for the task table in the database'''
     id: Optional[int] = None
@@ -157,7 +196,12 @@ class Task(BaseModel):
 class Recommendation(BaseModel):
     '''Model for the recommendation table in the database'''
     id: Optional[int] = None
+    session_id: int
     task_id: int
+    rec_type: Optional[str] = None
+    strategy: Optional[str] = None
+    status: str = 'pending'  # "pending", "accepted", "rejected"
+    rejected_reason: Optional[str] = None
     rec_ts: datetime = datetime.now(timezone.utc)
 
     class Config:
@@ -168,10 +212,12 @@ class Recommendation(BaseModel):
 class WorkLog(BaseModel):
     '''WorkLog is a log of the work done on a task'''
     id: Optional[int] = None
+    session_id: int
     task_id: int
     rec_id: Optional[int] = None
     start_ts: datetime = datetime.now(timezone.utc)
     end_ts: Optional[datetime] = None
+    completion_pct: Optional[float] = None
 
     class Config:
         '''from_attributes allows Pydantic to work with SQLAlchemy models'''
