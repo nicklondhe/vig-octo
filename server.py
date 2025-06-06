@@ -4,6 +4,7 @@
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
+from functools import wraps
 
 # Third-party imports
 from mcp.server.fastmcp import FastMCP
@@ -218,6 +219,76 @@ class TaskMatrixResponse(BaseModel):
     high: dict[str, List[dict[str, object]]]
 
 # Helper functions for goal-related operations
+
+def _ensure_timezone_aware(dt: datetime) -> datetime:
+    """Helper function to ensure a datetime is timezone-aware (UTC if None).
+    
+    Args:
+        dt: datetime object that may or may not be timezone-aware
+        
+    Returns:
+        datetime: timezone-aware datetime object
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _calculate_time_diff_minutes(start_dt: datetime, end_dt: datetime) -> float:
+    """Helper function to calculate time difference in minutes between two datetimes.
+    
+    Handles timezone normalization automatically.
+    
+    Args:
+        start_dt: Start datetime
+        end_dt: End datetime
+        
+    Returns:
+        float: Time difference in minutes
+    """
+    start_aware = _ensure_timezone_aware(start_dt)
+    end_aware = _ensure_timezone_aware(end_dt)
+    return (end_aware - start_aware).total_seconds() / 60
+
+
+def _get_entity_or_error(session, model_class, entity_id, entity_name):
+    """Helper function to get an entity by ID or return error info.
+    
+    Args:
+        session: SQLAlchemy session
+        model_class: The model class to query
+        entity_id: ID of the entity to find
+        entity_name: Human-readable name for error messages
+        
+    Returns:
+        tuple: (entity, error_message) - entity is None if not found, error_message is None if found
+    """
+    entity = session.query(model_class).filter(model_class.id == entity_id).first()
+    if not entity:
+        return None, f"{entity_name} with ID {entity_id} not found"
+    return entity, None
+
+
+def with_db_session(func):
+    """Decorator to handle database session management with proper error handling.
+    
+    The decorated function should accept 'db_session' as its first parameter.
+    """
+    @wraps(func)
+    def wrapper(*args, **kwargs):
+        db_session = DBSession()
+        try:
+            return func(db_session, *args, **kwargs)
+        except Exception as e:  # pylint: disable=broad-except
+            db_session.rollback()
+            # Re-raise the exception to be handled by the calling function
+            raise e
+        finally:
+            db_session.close()
+    return wrapper
+
 
 def _get_task_goal(session, task_id):
     """Helper method to get the goal associated with a task.
@@ -539,11 +610,11 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
     """
     session = DBSession()
     try:
-        task = session.query(TaskModel).filter(TaskModel.id == task_id).first()
-        if not task:
+        task, error_msg = _get_entity_or_error(session, TaskModel, task_id, "Task")
+        if error_msg:
             return TaskResponse(
                 success=False,
-                message=f"Task with ID {task_id} not found"
+                message=error_msg
             )
 
         # Store original status to detect changes
@@ -958,7 +1029,7 @@ def get_velocity_stats(stats_data: VelocityStatsRequest) -> VelocityStatsRespons
         total_time_minutes = 0
         for log in work_logs:
             if log.end_ts and log.start_ts:
-                time_diff = (log.end_ts - log.start_ts).total_seconds() / 60
+                time_diff = _calculate_time_diff_minutes(log.start_ts, log.end_ts)
                 total_time_minutes += time_diff
 
         # 2. Average completion percentage of tasks
@@ -987,8 +1058,9 @@ def get_velocity_stats(stats_data: VelocityStatsRequest) -> VelocityStatsRespons
         weekday_productivity = {i: 0 for i in range(7)}  # 0 = Monday, 6 = Sunday
         for log in work_logs:
             if log.end_ts and log.start_ts:
-                weekday = log.start_ts.weekday()
-                time_diff = (log.end_ts - log.start_ts).total_seconds() / 60
+                start_ts_aware = _ensure_timezone_aware(log.start_ts)
+                weekday = start_ts_aware.weekday()
+                time_diff = _calculate_time_diff_minutes(log.start_ts, log.end_ts)
                 weekday_productivity[weekday] += time_diff
 
         # 7. Total number of sessions
@@ -1112,15 +1184,14 @@ def end_work_log(end_data: EndWorkLogRequest) -> WorkLogResponse:
     """
     db_session = DBSession()
     try:
-        # Verify the work log exists and is not already ended
-        work_log = db_session.query(WorkLogModel).filter(
-            WorkLogModel.id == end_data.work_log_id
-        ).first()
-
-        if not work_log:
+        # Verify the work log exists
+        work_log, error_msg = _get_entity_or_error(
+            db_session, WorkLogModel, end_data.work_log_id, "Work log"
+        )
+        if error_msg:
             return WorkLogResponse(
                 success=False,
-                message=f"Work log with ID {end_data.work_log_id} not found",
+                message=error_msg,
                 session_id=0
             )
 
@@ -1133,14 +1204,13 @@ def end_work_log(end_data: EndWorkLogRequest) -> WorkLogResponse:
             )
 
         # Get the task for this work log
-        task = db_session.query(TaskModel).filter(
-            TaskModel.id == work_log.task_id
-        ).first()
-
-        if not task:
+        task, error_msg = _get_entity_or_error(
+            db_session, TaskModel, work_log.task_id, "Task"
+        )
+        if error_msg:
             return WorkLogResponse(
                 success=False,
-                message=f"Task with ID {work_log.task_id} not found",
+                message=error_msg,
                 session_id=work_log.session_id
             )
 
@@ -1159,14 +1229,14 @@ def end_work_log(end_data: EndWorkLogRequest) -> WorkLogResponse:
             TaskSummaryModel.task_id == work_log.task_id
         ).first()
 
+        # Calculate time worked in minutes using helper function
+        time_diff = _calculate_time_diff_minutes(work_log.start_ts, now)
+        
         if summary:
-            # Calculate time worked in minutes
-            time_diff = (now - work_log.start_ts).total_seconds() / 60
             summary.time_worked += int(time_diff)
             summary.updated_ts = now
         else:
             # Create a new task summary
-            time_diff = (now - work_log.start_ts).total_seconds() / 60
             summary = TaskSummaryModel(
                 task_id=work_log.task_id,
                 time_worked=int(time_diff),
@@ -1180,8 +1250,7 @@ def end_work_log(end_data: EndWorkLogRequest) -> WorkLogResponse:
 
         return WorkLogResponse(
             success=True,
-            message=f"Work log ended for task '{task.name}' with  "+ \
-                "{end_data.completion_pct}% completion",
+            message=f"Work log ended for task '{task.name}' with {end_data.completion_pct}% completion",
             session_id=work_log.session_id,
             work_log=_serialize_work_log(work_log)
         )
@@ -1209,39 +1278,36 @@ def start_work_log(log_data: StartWorkLogRequest) -> WorkLogResponse:
     db_session = DBSession()
     try:
         # Verify the session exists
-        session = db_session.query(WorkSessionModel).filter(
-            WorkSessionModel.id == log_data.session_id
-        ).first()
-
-        if not session:
+        session, error_msg = _get_entity_or_error(
+            db_session, WorkSessionModel, log_data.session_id, "Session"
+        )
+        if error_msg:
             return WorkLogResponse(
                 success=False,
-                message=f"Session with ID {log_data.session_id} not found",
+                message=error_msg,
                 session_id=log_data.session_id
             )
 
         # Verify the task exists
-        task = db_session.query(TaskModel).filter(
-            TaskModel.id == log_data.task_id
-        ).first()
-
-        if not task:
+        task, error_msg = _get_entity_or_error(
+            db_session, TaskModel, log_data.task_id, "Task"
+        )
+        if error_msg:
             return WorkLogResponse(
                 success=False,
-                message=f"Task with ID {log_data.task_id} not found",
+                message=error_msg,
                 session_id=log_data.session_id
             )
 
         # If recommendation_id is provided, verify it exists
         if log_data.recommendation_id is not None:
-            recommendation = db_session.query(RecommendationModel).filter(
-                RecommendationModel.id == log_data.recommendation_id
-            ).first()
-
-            if not recommendation:
+            recommendation, error_msg = _get_entity_or_error(
+                db_session, RecommendationModel, log_data.recommendation_id, "Recommendation"
+            )
+            if error_msg:
                 return WorkLogResponse(
                     success=False,
-                    message=f"Recommendation with ID {log_data.recommendation_id} not found",
+                    message=error_msg,
                     session_id=log_data.session_id
                 )
 
@@ -1288,14 +1354,13 @@ def update_recommendation_status(status_data:
     db_session = DBSession()
     try:
         # Verify the recommendation exists
-        recommendation = db_session.query(RecommendationModel).filter(
-            RecommendationModel.id == status_data.recommendation_id
-        ).first()
-
-        if not recommendation:
+        recommendation, error_msg = _get_entity_or_error(
+            db_session, RecommendationModel, status_data.recommendation_id, "Recommendation"
+        )
+        if error_msg:
             return RecommendationResponse(
                 success=False,
-                message=f"Recommendation with ID {status_data.recommendation_id} not found",
+                message=error_msg,
                 session_id=0
             )
 
