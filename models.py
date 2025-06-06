@@ -14,18 +14,18 @@ from pydantic import BaseModel
 Base = declarative_base()
 
 class WorkSessionModel(Base):
-   '''WorkSessionModel is a model for the work_session table in the database'''
-   __tablename__ = 'work_session'
-   
-   id = Column(Integer, primary_key=True)
-   start_ts = Column(DateTime, default=datetime.now(timezone.utc))
-   end_ts = Column(DateTime)
-   planned_duration = Column(Integer)  # minutes
-   context = Column(String)            # "90 minutes", "big tasks + breaks"
-   query = Column(Text)               # original user request
-   completion_pct = Column(Float)      # 0.0-1.0
-   effectiveness_rating = Column(Integer)  # 1-5
-   notes = Column(Text)
+    '''WorkSessionModel is a model for the work_session table in the database'''
+    __tablename__ = 'work_session'
+
+    id = Column(Integer, primary_key=True)
+    start_ts = Column(DateTime, default=datetime.now(timezone.utc))
+    end_ts = Column(DateTime)
+    planned_duration = Column(Integer)  # minutes
+    context = Column(String)            # "90 minutes", "big tasks + breaks"
+    query = Column(Text)               # original user request
+    completion_pct = Column(Float)      # 0.0-1.0
+    effectiveness_rating = Column(Integer)  # 1-5
+    notes = Column(Text)
 
 class TaskModel(Base):
     '''TaskModel is a model for the task table in the database'''
