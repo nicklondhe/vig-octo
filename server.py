@@ -306,20 +306,19 @@ def _get_task_goal(session, task_id):
 
 
 def _update_goal_progress(session, task_id, goal_id,
-                          task_completion_pct=100.0, notes=None): # pylint: disable=unused-argument
+                          task_completion_pct=100.0, notes=None):
     """Helper method to update goal progress when a task is completed.
 
     Args:
         session: SQLAlchemy session
         task_id: ID of the task that was completed
         goal_id: ID of the goal to update
-        task_completion_pct: Percentage contribution of this task (default 100%)
+        task_completion_pct: Percentage completion of this specific task (0.0-100.0)
         notes: Optional custom notes for the progress history entry
 
     Returns:
         float: Updated completion percentage of the goal
     """
-    #TODO: task completion not used, but could be used for partial completions
     try:
         # Get the task
         task = session.query(TaskModel).filter(TaskModel.id == task_id).first()
@@ -356,15 +355,21 @@ def _update_goal_progress(session, task_id, goal_id,
         # Start with current completion percentage or 0 if no previous entries
         current_completion = latest_progress.completion_pct if latest_progress else 0.0
 
-        # Add this task's contribution to the current completion
-        new_completion = current_completion + task_contribution
+        # Calculate the actual contribution based on task completion percentage
+        # If task is 50% complete and represents 20% of the goal, it contributes 10%
+        actual_contribution = task_contribution * (task_completion_pct / 100.0)
+
+        # Add this task's actual contribution to the current completion
+        new_completion = current_completion + actual_contribution
 
         # Cap at 100%
         new_completion = min(100.0, new_completion)
 
         # Record progress history
         if notes is None:
-            notes = f"Task '{task.name}' added {task_contribution:.1f}% to goal completion"
+            notes = (f"Task '{task.name}' at {task_completion_pct:.1f}% completion "
+                    f"added {actual_contribution:.1f}% to goal "
+                    f"(task weight: {task_contribution:.1f}%)")
 
         progress_entry = GoalProgressHistoryModel(
             goal_id=goal_id,
@@ -638,9 +643,9 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
         if is_newly_completed:
             goal_task = _get_task_goal(session, task_id)
             if goal_task:
-                # Update goal progress
+                # Update goal progress - task is newly completed so it's 100%
                 new_completion = _update_goal_progress(
-                    session, task_id, goal_task.goal_id
+                    session, task_id, goal_task.goal_id, task_completion_pct=100.0
                 )
                 if new_completion is not None:
                     completion_message = (
