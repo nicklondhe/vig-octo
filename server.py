@@ -9,7 +9,7 @@ from functools import wraps
 # Third-party imports
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, case
 from sqlalchemy.orm import sessionmaker
 
 # Local application imports
@@ -698,11 +698,20 @@ def get_task_matrix_view(limit: int = 10, sort_by: str = "created_desc") -> Task
         sort_order = sort_orders.get(sort_by, sort_orders["created_desc"])
 
         # Query pending tasks with the specified sort order
-        tasks = (session.query(TaskModel)
-                .filter(TaskModel.status == 'pending')
-                .order_by(sort_order)
-                .limit(limit)
-                .all())
+        tasks_query = session.query(TaskModel).filter(TaskModel.status == 'pending')
+        
+        # Handle priority sorting with custom order
+        if sort_by == "priority_desc":
+            # Use CASE statement to sort by priority level (high=3, medium=2, low=1)
+            priority_order = case(
+                (TaskModel.priority == 'high', 3),
+                (TaskModel.priority == 'medium', 2),
+                (TaskModel.priority == 'low', 1),
+                else_=1
+            ).desc()
+            tasks = tasks_query.order_by(priority_order).limit(limit).all()
+        else:
+            tasks = tasks_query.order_by(sort_order).limit(limit).all()
 
         # Use nested defaultdict to automatically create bins
         matrix = defaultdict(lambda: defaultdict(list))
