@@ -174,7 +174,7 @@ pytest --cov=server --cov-report=term-missing
 ## Code Style Guidelines
 
 - Use docstrings with triple single quotes `'''` for all modules, classes, and functions
-- Follow PEQ style guidelines
+- Follow PEP style guidelines
 - Imports: standard lib first, then third-party, then local
 - Use type hints for all function parameters and return values
 - Variables: snake_case for variables, CamelCase for classes
