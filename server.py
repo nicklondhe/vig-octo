@@ -627,16 +627,14 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
 
         # Convert the request data to a dictionary, excluding unset fields
         # This ensures we only modify fields that were explicitly provided
-        data_dict = task_data.model_dump(exclude_unset=True)
+        updates = task_data.model_dump(exclude_unset=True)
         
         # For due_date specifically, we need to check if it was explicitly set to None
-        # by looking at the original request, since exclude_unset=True would exclude None values
-        original_dict = task_data.model_dump()
-        if 'due_date' in data_dict or (hasattr(task_data, '__pydantic_fields_set__') and 'due_date' in task_data.__pydantic_fields_set__):
-            # due_date was explicitly provided (either with a value or explicitly set to None)
-            data_dict['due_date'] = original_dict['due_date']
-        
-        updates = data_dict
+        # since exclude_unset=True excludes None values, but we want to allow explicit clearing
+        if hasattr(task_data, '__pydantic_fields_set__') and 'due_date' in task_data.__pydantic_fields_set__:
+            # due_date was explicitly set (either to a value or explicitly to None)
+            # Get the actual value including None
+            updates['due_date'] = getattr(task_data, 'due_date')
 
         # Apply the updates to the task
         for key, value in updates.items():
