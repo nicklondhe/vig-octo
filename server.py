@@ -626,7 +626,15 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
         original_status = task.status
 
         # Convert the request data to a dictionary and filter out None values
-        updates = {k: v for k, v in task_data.dict().items() if v is not None}
+        # Special handling for due_date - include it even if None to allow clearing
+        data_dict = task_data.model_dump()
+        updates = {}
+        for k, v in data_dict.items():
+            if v is not None:
+                updates[k] = v
+            elif k == 'due_date' and 'due_date' in data_dict:
+                # Include due_date even if None to allow clearing it
+                updates[k] = v
 
         # Apply the updates to the task
         for key, value in updates.items():
