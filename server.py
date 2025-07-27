@@ -2,7 +2,7 @@
 #pylint: disable=too-many-lines
 # Standard library imports
 from collections import defaultdict
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from typing import List, Optional
 from functools import wraps
 
@@ -18,7 +18,7 @@ from models import (
     TaskModel, WeeklyGoalModel, GoalTaskModel,
     GoalProgressHistoryModel, WorkSessionModel,
     RecommendationModel, WorkLogModel, Base,
-    TaskSummaryModel
+    TaskSummaryModel, HabitLogModel
 )
 
 # Get configuration
@@ -81,6 +81,7 @@ class AddWeeklyGoalRequest(BaseModel):
     title: str
     description: Optional[str] = None
     category: Optional[str] = None
+    goal_type: str = 'project'
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
     status: str = 'pending'
@@ -99,6 +100,14 @@ class UpdateGoalProgressRequest(BaseModel):
     goal_id: int
     completion_pct: float = 100.0
     notes: Optional[str] = None
+
+# Request model for updating goal status
+class UpdateGoalStatusRequest(BaseModel):
+    """Model for updating a goal's status"""
+    goal_id: int
+    status: str  # "completed", "abandoned", "active", "pending"
+    notes: Optional[str] = None
+    cascade_to_tasks: bool = True
 
 # Response model for goal progress operations
 class GoalProgressResponse(BaseModel):
@@ -217,6 +226,35 @@ class TaskMatrixResponse(BaseModel):
     low: dict[str, List[dict[str, object]]]
     medium: dict[str, List[dict[str, object]]]
     high: dict[str, List[dict[str, object]]]
+
+# Request model for logging habit completion
+class LogHabitRequest(BaseModel):
+    """Model for logging habit completion"""
+    goal_id: int
+    logged_date: Optional[str] = None  # YYYY-MM-DD format, defaults to today
+    duration_minutes: Optional[int] = None
+    notes: Optional[str] = None
+
+# Response model for habit operations
+class HabitResponse(BaseModel):
+    """Model for habit operation response"""
+    success: bool
+    message: str
+    goal_id: int
+    habit_log: Optional[dict[str, object]] = None
+
+# Response model for habit insights
+class HabitInsightsResponse(BaseModel):
+    """Model for habit insights response"""
+    success: bool
+    goal_id: int
+    goal_title: str
+    days_analyzed: int
+    frequency_text: str
+    total_completions: int
+    avg_duration: Optional[float] = None
+    total_time: int
+    recent_entries: List[dict[str, object]] = []
 
 # Helper functions for goal-related operations
 
@@ -803,6 +841,90 @@ def get_goal_progress(goal_id: int) -> GoalProgressInfoResponse:
 
 
 @mcp.tool()
+def update_goal_status(status_data: UpdateGoalStatusRequest) -> WeeklyGoalResponse:
+    """Update a goal's status and optionally cascade to associated tasks"""
+    session = DBSession()
+    try:
+        # Verify the goal exists
+        goal = session.query(WeeklyGoalModel).filter(
+            WeeklyGoalModel.id == status_data.goal_id
+        ).first()
+        
+        if not goal:
+            return WeeklyGoalResponse(
+                success=False,
+                message=f"Goal with ID {status_data.goal_id} not found",
+                goal_id=status_data.goal_id
+            )
+        
+        # Update the goal status
+        goal.status = status_data.status
+        goal.updated_ts = datetime.now(timezone.utc)
+        
+        # Add progress history entry if notes provided or status is completed/abandoned
+        if status_data.notes or status_data.status in ['completed', 'abandoned']:
+            completion_pct = 100.0 if status_data.status == 'completed' else 0.0
+            notes = status_data.notes or f"Goal marked as {status_data.status}"
+            
+            progress_entry = GoalProgressHistoryModel(
+                goal_id=status_data.goal_id,
+                timestamp=datetime.now(timezone.utc),
+                notes=notes,
+                completion_pct=completion_pct
+            )
+            session.add(progress_entry)
+        
+        # Cascade to tasks if requested
+        tasks_updated = 0
+        if status_data.cascade_to_tasks:
+            # Get all tasks associated with this goal
+            goal_tasks = session.query(GoalTaskModel).filter(
+                GoalTaskModel.goal_id == status_data.goal_id
+            ).all()
+            
+            if goal_tasks:
+                task_ids = [gt.task_id for gt in goal_tasks]
+                tasks = session.query(TaskModel).filter(
+                    TaskModel.id.in_(task_ids)
+                ).all()
+                
+                # Update task status based on goal status
+                new_task_status = None
+                if status_data.status == 'completed':
+                    new_task_status = 'done'
+                elif status_data.status == 'abandoned':
+                    new_task_status = 'cancelled'
+                
+                if new_task_status:
+                    for task in tasks:
+                        if task.status not in ['done', 'cancelled']:  # Don't overwrite completed/cancelled tasks
+                            task.status = new_task_status
+                            task.updated_ts = datetime.now(timezone.utc)
+                            tasks_updated += 1
+        
+        session.commit()
+        
+        message = f"Goal '{goal.title}' status updated to '{status_data.status}'"
+        if tasks_updated > 0:
+            message += f" and {tasks_updated} associated tasks updated"
+        
+        return WeeklyGoalResponse(
+            success=True,
+            message=message,
+            goal_id=status_data.goal_id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        session.rollback()
+        return WeeklyGoalResponse(
+            success=False,
+            message=f"Failed to update goal status: {str(e)}",
+            goal_id=status_data.goal_id
+        )
+    finally:
+        session.close()
+
+
+@mcp.tool()
 def update_goal_progress(progress_data: UpdateGoalProgressRequest) -> GoalProgressResponse:
     """Update a goal's progress based on task completion."""
     session = DBSession()
@@ -870,6 +992,7 @@ def create_weekly_goal(goal_data: AddWeeklyGoalRequest) -> WeeklyGoalResponse:
             title=goal_data.title,
             description=goal_data.description,
             category=goal_data.category,
+            goal_type=goal_data.goal_type,
             start_date=start_date,
             end_date=goal_data.end_date,
             status=goal_data.status,
@@ -1541,6 +1664,46 @@ def start_session(session_data: StartSessionRequest) -> SessionResponse:
 
 
 @mcp.tool()
+def list_tasks_by_goal(goal_id: int) -> TaskList:
+    """List all tasks associated with a specific goal"""
+    session = DBSession()
+    try:
+        # Verify the goal exists
+        goal = session.query(WeeklyGoalModel).filter(
+            WeeklyGoalModel.id == goal_id
+        ).first()
+        
+        if not goal:
+            return TaskList(tasks=[])
+        
+        # Get all task IDs associated with this goal
+        goal_tasks = session.query(GoalTaskModel).filter(
+            GoalTaskModel.goal_id == goal_id
+        ).all()
+        
+        if not goal_tasks:
+            return TaskList(tasks=[])
+        
+        # Extract task IDs
+        task_ids = [gt.task_id for gt in goal_tasks]
+        
+        # Query the actual tasks
+        tasks = session.query(TaskModel).filter(
+            TaskModel.id.in_(task_ids)
+        ).order_by(TaskModel.created_ts.desc()).all()
+        
+        # Convert to dictionary format for response
+        task_list = [
+            _serialize_task(task)
+            for task in tasks
+        ]
+        
+        return TaskList(tasks=task_list)
+    finally:
+        session.close()
+
+
+@mcp.tool()
 def list_weekly_goals(date: Optional[datetime] = None) -> WeeklyGoalList:
     """List weekly goals for a specific week
 
@@ -1583,6 +1746,7 @@ def list_weekly_goals(date: Optional[datetime] = None) -> WeeklyGoalList:
                 'title': goal.title,
                 'description': goal.description,
                 'category': goal.category,
+                'goal_type': goal.goal_type,
                 'start_date': goal.start_date,
                 'end_date': goal.end_date,
                 'status': goal.status,
@@ -1597,5 +1761,246 @@ def list_weekly_goals(date: Optional[datetime] = None) -> WeeklyGoalList:
         # Log the error but return an empty list rather than failing
         print(f"Error fetching weekly goals: {str(e)}")
         return WeeklyGoalList(goals=[])
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def list_this_weeks_projects() -> WeeklyGoalList:
+    """List this week's project goals (goal_type='project')"""
+    return _list_goals_by_type('project')
+
+
+@mcp.tool()
+def list_this_weeks_habits() -> WeeklyGoalList:
+    """List this week's habit goals (goal_type='habit')"""
+    return _list_goals_by_type('habit')
+
+
+def _list_goals_by_type(goal_type: str) -> WeeklyGoalList:
+    """Helper function to list goals by type for current week"""
+    session = DBSession()
+    try:
+        # Get current week boundaries
+        now = datetime.now(timezone.utc)
+        days_since_monday = now.weekday()
+        start_of_week = now.replace(hour=0, minute=0, second=0, microsecond=0) - \
+                        timedelta(days=days_since_monday)
+        end_of_week = start_of_week + timedelta(days=6, hours=23, minutes=59, seconds=59)
+
+        # Query goals that overlap with current week and match goal_type
+        goals = (session.query(WeeklyGoalModel)
+                .filter(
+                    (WeeklyGoalModel.goal_type == goal_type) &
+                    (WeeklyGoalModel.start_date <= end_of_week) &
+                    (
+                        (WeeklyGoalModel.end_date >= start_of_week) |
+                        (WeeklyGoalModel.end_date.is_(None))
+                    )
+                )
+                .order_by(WeeklyGoalModel.start_date)
+                .all())
+
+        # Convert to dictionary format for response
+        goal_list = [
+            {
+                'id': goal.id,
+                'title': goal.title,
+                'description': goal.description,
+                'category': goal.category,
+                'goal_type': goal.goal_type,
+                'start_date': goal.start_date,
+                'end_date': goal.end_date,
+                'status': goal.status,
+                'created_ts': goal.created_ts,
+                'updated_ts': goal.updated_ts
+            }
+            for goal in goals
+        ]
+
+        return WeeklyGoalList(goals=goal_list)
+    except Exception as e:  # pylint: disable=broad-except
+        print(f"Error fetching {goal_type} goals: {str(e)}")
+        return WeeklyGoalList(goals=[])
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def log_habit(habit_data: LogHabitRequest) -> HabitResponse:
+    """Log habit completion for a specific date"""
+    session = DBSession()
+    try:
+        # Verify the goal exists and is a habit
+        goal = session.query(WeeklyGoalModel).filter(
+            WeeklyGoalModel.id == habit_data.goal_id
+        ).first()
+        
+        if not goal:
+            return HabitResponse(
+                success=False,
+                message=f"Goal with ID {habit_data.goal_id} not found",
+                goal_id=habit_data.goal_id
+            )
+        
+        if goal.goal_type != 'habit':
+            return HabitResponse(
+                success=False,
+                message=f"Goal '{goal.title}' is not a habit goal",
+                goal_id=habit_data.goal_id
+            )
+        
+        # Parse the logged date or use today
+        if habit_data.logged_date:
+            try:
+                logged_date = datetime.strptime(habit_data.logged_date, '%Y-%m-%d').date()
+            except ValueError:
+                return HabitResponse(
+                    success=False,
+                    message="Invalid date format. Use YYYY-MM-DD",
+                    goal_id=habit_data.goal_id
+                )
+        else:
+            logged_date = date.today()
+        
+        # Check if already logged for this date
+        existing_log = session.query(HabitLogModel).filter(
+            HabitLogModel.goal_id == habit_data.goal_id,
+            HabitLogModel.logged_date == logged_date
+        ).first()
+        
+        if existing_log:
+            return HabitResponse(
+                success=False,
+                message=f"Habit already logged for {logged_date}",
+                goal_id=habit_data.goal_id
+            )
+        
+        # Create new habit log
+        new_log = HabitLogModel(
+            goal_id=habit_data.goal_id,
+            logged_date=logged_date,
+            duration_minutes=habit_data.duration_minutes,
+            notes=habit_data.notes,
+            created_ts=datetime.now(timezone.utc)
+        )
+        
+        session.add(new_log)
+        session.commit()
+        
+        # Serialize the log for response
+        habit_log = {
+            'id': new_log.id,
+            'goal_id': new_log.goal_id,
+            'logged_date': new_log.logged_date,
+            'duration_minutes': new_log.duration_minutes,
+            'notes': new_log.notes,
+            'created_ts': new_log.created_ts
+        }
+        
+        message = f"Habit '{goal.title}' logged for {logged_date}"
+        if habit_data.duration_minutes:
+            message += f" ({habit_data.duration_minutes} minutes)"
+        
+        return HabitResponse(
+            success=True,
+            message=message,
+            goal_id=habit_data.goal_id,
+            habit_log=habit_log
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        session.rollback()
+        return HabitResponse(
+            success=False,
+            message=f"Failed to log habit: {str(e)}",
+            goal_id=habit_data.goal_id
+        )
+    finally:
+        session.close()
+
+
+@mcp.tool()
+def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
+    """Get habit insights for introspection over a specified time period"""
+    session = DBSession()
+    try:
+        # Verify the goal exists and is a habit
+        goal = session.query(WeeklyGoalModel).filter(
+            WeeklyGoalModel.id == goal_id
+        ).first()
+        
+        if not goal:
+            return HabitInsightsResponse(
+                success=False,
+                goal_id=goal_id,
+                goal_title="",
+                days_analyzed=days,
+                frequency_text="Goal not found",
+                total_completions=0,
+                total_time=0
+            )
+        
+        if goal.goal_type != 'habit':
+            return HabitInsightsResponse(
+                success=False,
+                goal_id=goal_id,
+                goal_title=goal.title,
+                days_analyzed=days,
+                frequency_text="Not a habit goal",
+                total_completions=0,
+                total_time=0
+            )
+        
+        # Calculate date range
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days-1)
+        
+        # Get habit logs in the date range
+        habit_logs = session.query(HabitLogModel).filter(
+            HabitLogModel.goal_id == goal_id,
+            HabitLogModel.logged_date >= start_date,
+            HabitLogModel.logged_date <= end_date
+        ).order_by(HabitLogModel.logged_date.desc()).all()
+        
+        # Calculate metrics
+        total_completions = len(habit_logs)
+        frequency_text = f"{total_completions}/{days} days"
+        
+        # Calculate duration metrics
+        durations = [log.duration_minutes for log in habit_logs if log.duration_minutes is not None]
+        avg_duration = sum(durations) / len(durations) if durations else None
+        total_time = sum(durations) if durations else 0
+        
+        # Format recent entries (last 10)
+        recent_entries = [
+            {
+                'date': log.logged_date.strftime('%Y-%m-%d'),
+                'duration_minutes': log.duration_minutes,
+                'notes': log.notes
+            }
+            for log in habit_logs[:10]
+        ]
+        
+        return HabitInsightsResponse(
+            success=True,
+            goal_id=goal_id,
+            goal_title=goal.title,
+            days_analyzed=days,
+            frequency_text=frequency_text,
+            total_completions=total_completions,
+            avg_duration=round(avg_duration, 1) if avg_duration else None,
+            total_time=total_time,
+            recent_entries=recent_entries
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return HabitInsightsResponse(
+            success=False,
+            goal_id=goal_id,
+            goal_title="",
+            days_analyzed=days,
+            frequency_text=f"Error: {str(e)}",
+            total_completions=0,
+            total_time=0
+        )
     finally:
         session.close()

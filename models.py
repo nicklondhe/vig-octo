@@ -105,6 +105,7 @@ class WeeklyGoalModel(Base):
     title = Column(String(100), nullable=False)
     description = Column(String(500))
     category = Column(String(50))
+    goal_type = Column(String(20), nullable=False, default='project')
     start_date = Column(
         DateTime, nullable=False, default=datetime.now(timezone.utc)
     )
@@ -152,6 +153,21 @@ class GoalProgressHistoryModel(Base):
 
     # Define relationship
     goal = relationship('WeeklyGoalModel', backref='progress_history')
+
+
+class HabitLogModel(Base):
+    '''Simple habit completion tracking'''
+    __tablename__ = 'habit_log'
+    
+    id = Column(Integer, primary_key=True)
+    goal_id = Column(Integer, ForeignKey('weekly_goals.id'), nullable=False)
+    logged_date = Column(Date, nullable=False)
+    duration_minutes = Column(Integer)
+    notes = Column(String(200))
+    created_ts = Column(DateTime, nullable=False, default=datetime.now(timezone.utc))
+    
+    # Define relationship
+    goal = relationship('WeeklyGoalModel', backref='habit_logs')
 
 
 # Pydantic Models
@@ -246,6 +262,7 @@ class WeeklyGoal(BaseModel):
     title: str
     description: Optional[str] = None
     category: Optional[str] = None
+    goal_type: str = 'project'
     start_date: datetime = datetime.now(timezone.utc)
     end_date: Optional[datetime] = None
     status: str = 'pending'
@@ -279,6 +296,20 @@ class GoalProgressHistory(BaseModel):
     timestamp: datetime = datetime.now(timezone.utc)
     notes: Optional[str] = None
     completion_pct: float
+
+    class Config:
+        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
+        from_attributes = True
+
+
+class HabitLog(BaseModel):
+    '''Simple habit completion tracking'''
+    id: Optional[int] = None
+    goal_id: int
+    logged_date: datetime = datetime.now(timezone.utc).date()
+    duration_minutes: Optional[int] = None
+    notes: Optional[str] = None
+    created_ts: datetime = datetime.now(timezone.utc)
 
     class Config:
         '''from_attributes allows Pydantic to work with SQLAlchemy models'''
