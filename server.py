@@ -1968,7 +1968,7 @@ def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
         
         # Calculate duration metrics
         durations = [log.duration_minutes for log in habit_logs if log.duration_minutes is not None]
-        avg_duration = sum(durations) / len(durations) if durations else None
+        avg_duration = sum(durations) / len(durations) if len(durations) > 0 else None
         total_time = sum(durations) if durations else 0
         
         # Format recent entries (last 10)
@@ -1988,7 +1988,7 @@ def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
             days_analyzed=days,
             frequency_text=frequency_text,
             total_completions=total_completions,
-            avg_duration=round(avg_duration, 1) if avg_duration else None,
+            avg_duration=round(avg_duration, 1) if avg_duration is not None else None,
             total_time=total_time,
             recent_entries=recent_entries
         )

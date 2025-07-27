@@ -2,7 +2,7 @@
 This module contains the SQLAlchemy & Pydantic models for the task
 management system.
 '''
-from datetime import datetime, timezone
+from datetime import datetime, timezone, date
 from typing import Optional
 from sqlalchemy import (
     Column, Integer, String, DateTime, ForeignKey, Boolean, Date, Float, Text
@@ -306,7 +306,7 @@ class HabitLog(BaseModel):
     '''Simple habit completion tracking'''
     id: Optional[int] = None
     goal_id: int
-    logged_date: datetime = datetime.now(timezone.utc).date()
+    logged_date: date = date.today()
     duration_minutes: Optional[int] = None
     notes: Optional[str] = None
     created_ts: datetime = datetime.now(timezone.utc)
