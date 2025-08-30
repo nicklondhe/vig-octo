@@ -9,7 +9,7 @@ from functools import wraps
 # Third-party imports
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel
-from sqlalchemy import create_engine, case
+from sqlalchemy import create_engine, case, func, and_
 from sqlalchemy.orm import sessionmaker
 
 # Local application imports
@@ -260,10 +260,10 @@ class HabitInsightsResponse(BaseModel):
 
 def _ensure_timezone_aware(dt: datetime) -> datetime:
     """Helper function to ensure a datetime is timezone-aware (UTC if None).
-    
+
     Args:
         dt: datetime object that may or may not be timezone-aware
-        
+
     Returns:
         datetime: timezone-aware datetime object
     """
@@ -276,13 +276,13 @@ def _ensure_timezone_aware(dt: datetime) -> datetime:
 
 def _calculate_time_diff_minutes(start_dt: datetime, end_dt: datetime) -> float:
     """Helper function to calculate time difference in minutes between two datetimes.
-    
+
     Handles timezone normalization automatically.
-    
+
     Args:
         start_dt: Start datetime
         end_dt: End datetime
-        
+
     Returns:
         float: Time difference in minutes
     """
@@ -293,13 +293,13 @@ def _calculate_time_diff_minutes(start_dt: datetime, end_dt: datetime) -> float:
 
 def _get_entity_or_error(session, model_class, entity_id, entity_name):
     """Helper function to get an entity by ID or return error info.
-    
+
     Args:
         session: SQLAlchemy session
         model_class: The model class to query
         entity_id: ID of the entity to find
         entity_name: Human-readable name for error messages
-        
+
     Returns:
         tuple: (entity, error_message) - entity is None if not found, error_message is None if found
     """
@@ -311,7 +311,7 @@ def _get_entity_or_error(session, model_class, entity_id, entity_name):
 
 def with_db_session(func):
     """Decorator to handle database session management with proper error handling.
-    
+
     The decorated function should accept 'db_session' as its first parameter.
     """
     @wraps(func)
@@ -433,16 +433,17 @@ def _update_goal_progress(session, task_id, goal_id,
         return None
 
 
-def _serialize_task(task: TaskModel):
+def _serialize_task(task: TaskModel, avg_completion_time=None):
     """Helper method to serialize a TaskModel into a dictionary.
 
     Args:
         task (TaskModel): The TaskModel instance to serialize
+        avg_completion_time (float): Optional average completion time in minutes
 
     Returns:
         dict: A dictionary representation of the task
     """
-    return {
+    result = {
         'id': task.id,
         'name': task.name,
         'complexity': task.complexity,
@@ -455,6 +456,11 @@ def _serialize_task(task: TaskModel):
         'updated': task.updated_ts,
         'context': config['env_type']
     }
+
+    if avg_completion_time is not None:
+        result['avg_completion_time'] = round(avg_completion_time, 1)
+
+    return result
 
 
 def _serialize_session(session: WorkSessionModel):
@@ -525,19 +531,58 @@ def _serialize_work_log(work_log):
 # Add a tool to list tasks with 'to-do' status
 @mcp.tool()
 def list_pending_tasks() -> TaskList:
-    """List all tasks with 'pending' status"""
+    """List all tasks with 'pending' status, including average completion time for repeatable tasks"""
     session = DBSession()
     try:
-        # Query tasks with status 'to-do' (stored as 'pending' in database)
-        tasks = (session.query(TaskModel)
-                 .filter(TaskModel.status == 'pending')
-                 .all())
+        # First get all pending tasks
+        pending_tasks = (session.query(TaskModel)
+                        .filter(TaskModel.status == 'pending')
+                        .all())
+
+        # Create a subquery to calculate average completion times for repeatable tasks
+        # This uses a weighted average based on recency (more recent completions have higher weight)
+        completion_time_subquery = (
+            session.query(
+                TaskModel.name,
+                func.sum(
+                    (func.extract('epoch', WorkLogModel.end_ts) - func.extract('epoch', WorkLogModel.start_ts)) / 60.0 *
+                    func.power(0.9, func.extract('day', func.current_timestamp() - WorkLogModel.end_ts))
+                ).label('weighted_time_sum'),
+                func.sum(
+                    func.power(0.9, func.extract('day', func.current_timestamp() - WorkLogModel.end_ts))
+                ).label('weight_sum'),
+                func.count(WorkLogModel.id).label('completion_count')
+            )
+            .join(WorkLogModel, TaskModel.id == WorkLogModel.task_id)
+            .filter(
+                and_(
+                    TaskModel.repeatable.is_(True),
+                    WorkLogModel.start_ts.isnot(None),
+                    WorkLogModel.end_ts.isnot(None),
+                    func.extract('epoch', WorkLogModel.end_ts) > func.extract('epoch', WorkLogModel.start_ts)
+                )
+            )
+            .group_by(TaskModel.name)
+            .having(func.count(WorkLogModel.id) >= 2)  # Need at least 2 completions
+            .subquery()
+        )
+
+        # Create a dictionary to store average completion times by task name
+        avg_times_query = session.query(
+            completion_time_subquery.c.name,
+            (completion_time_subquery.c.weighted_time_sum / completion_time_subquery.c.weight_sum).label('avg_time')
+        ).all()
+
+        avg_times_dict = {row.name: row.avg_time for row in avg_times_query}
 
         # Convert to dictionary format for response
-        task_list = [
-            _serialize_task(task)
-            for task in tasks
-        ]
+        task_list = []
+        for task in pending_tasks:
+            avg_completion_time = None
+            if task.repeatable and task.name in avg_times_dict:
+                avg_completion_time = avg_times_dict[task.name]
+
+            task_list.append(_serialize_task(task, avg_completion_time))
 
         return TaskList(tasks=task_list)
     finally:
@@ -666,7 +711,7 @@ def update_task(task_id: int, task_data: UpdateTaskRequest) -> TaskResponse:
         # Convert the request data to a dictionary, excluding unset fields
         # This ensures we only modify fields that were explicitly provided
         updates = task_data.model_dump(exclude_unset=True)
-        
+
         # For due_date specifically, we need to check if it was explicitly set to None
         # since exclude_unset=True excludes None values, but we want to allow explicit clearing
         if hasattr(task_data, '__pydantic_fields_set__') and 'due_date' in task_data.__pydantic_fields_set__:
@@ -745,7 +790,7 @@ def get_task_matrix_view(limit: int = 10, sort_by: str = "created_desc") -> Task
 
         # Query pending tasks with the specified sort order
         tasks_query = session.query(TaskModel).filter(TaskModel.status == 'pending')
-        
+
         # Handle priority sorting with custom order
         if sort_by == "priority_desc":
             # Use CASE statement to sort by priority level (high=3, medium=2, low=1)
@@ -849,23 +894,23 @@ def update_goal_status(status_data: UpdateGoalStatusRequest) -> WeeklyGoalRespon
         goal = session.query(WeeklyGoalModel).filter(
             WeeklyGoalModel.id == status_data.goal_id
         ).first()
-        
+
         if not goal:
             return WeeklyGoalResponse(
                 success=False,
                 message=f"Goal with ID {status_data.goal_id} not found",
                 goal_id=status_data.goal_id
             )
-        
+
         # Update the goal status
         goal.status = status_data.status
         goal.updated_ts = datetime.now(timezone.utc)
-        
+
         # Add progress history entry if notes provided or status is completed/abandoned
         if status_data.notes or status_data.status in ['completed', 'abandoned']:
             completion_pct = 100.0 if status_data.status == 'completed' else 0.0
             notes = status_data.notes or f"Goal marked as {status_data.status}"
-            
+
             progress_entry = GoalProgressHistoryModel(
                 goal_id=status_data.goal_id,
                 timestamp=datetime.now(timezone.utc),
@@ -873,7 +918,7 @@ def update_goal_status(status_data: UpdateGoalStatusRequest) -> WeeklyGoalRespon
                 completion_pct=completion_pct
             )
             session.add(progress_entry)
-        
+
         # Cascade to tasks if requested
         tasks_updated = 0
         if status_data.cascade_to_tasks:
@@ -881,33 +926,33 @@ def update_goal_status(status_data: UpdateGoalStatusRequest) -> WeeklyGoalRespon
             goal_tasks = session.query(GoalTaskModel).filter(
                 GoalTaskModel.goal_id == status_data.goal_id
             ).all()
-            
+
             if goal_tasks:
                 task_ids = [gt.task_id for gt in goal_tasks]
                 tasks = session.query(TaskModel).filter(
                     TaskModel.id.in_(task_ids)
                 ).all()
-                
+
                 # Update task status based on goal status
                 new_task_status = None
                 if status_data.status == 'completed':
                     new_task_status = 'done'
                 elif status_data.status == 'abandoned':
                     new_task_status = 'cancelled'
-                
+
                 if new_task_status:
                     for task in tasks:
                         if task.status not in ['done', 'cancelled']:  # Don't overwrite completed/cancelled tasks
                             task.status = new_task_status
                             task.updated_ts = datetime.now(timezone.utc)
                             tasks_updated += 1
-        
+
         session.commit()
-        
+
         message = f"Goal '{goal.title}' status updated to '{status_data.status}'"
         if tasks_updated > 0:
             message += f" and {tasks_updated} associated tasks updated"
-        
+
         return WeeklyGoalResponse(
             success=True,
             message=message,
@@ -1376,7 +1421,7 @@ def end_work_log(end_data: EndWorkLogRequest) -> WorkLogResponse:
 
         # Calculate time worked in minutes using helper function
         time_diff = _calculate_time_diff_minutes(work_log.start_ts, now)
-        
+
         if summary:
             summary.time_worked += int(time_diff)
             summary.updated_ts = now
@@ -1423,7 +1468,7 @@ def start_work_log(log_data: StartWorkLogRequest) -> WorkLogResponse:
     db_session = DBSession()
     try:
         # Verify the session exists
-        session, error_msg = _get_entity_or_error(
+        _, error_msg = _get_entity_or_error(
             db_session, WorkSessionModel, log_data.session_id, "Session"
         )
         if error_msg:
@@ -1446,7 +1491,7 @@ def start_work_log(log_data: StartWorkLogRequest) -> WorkLogResponse:
 
         # If recommendation_id is provided, verify it exists
         if log_data.recommendation_id is not None:
-            recommendation, error_msg = _get_entity_or_error(
+            _, error_msg = _get_entity_or_error(
                 db_session, RecommendationModel, log_data.recommendation_id, "Recommendation"
             )
             if error_msg:
@@ -1672,39 +1717,39 @@ def list_tasks_by_goal(goal_id: int) -> TaskList:
         goal = session.query(WeeklyGoalModel).filter(
             WeeklyGoalModel.id == goal_id
         ).first()
-        
+
         if not goal:
             return TaskList(tasks=[])
-        
+
         # Get all task IDs associated with this goal
         goal_tasks = session.query(GoalTaskModel).filter(
             GoalTaskModel.goal_id == goal_id
         ).all()
-        
+
         if not goal_tasks:
             return TaskList(tasks=[])
-        
+
         # Extract task IDs
         task_ids = [gt.task_id for gt in goal_tasks]
-        
+
         # Query the actual tasks
         tasks = session.query(TaskModel).filter(
             TaskModel.id.in_(task_ids)
         ).order_by(TaskModel.created_ts.desc()).all()
-        
+
         # Convert to dictionary format for response
         task_list = [
             _serialize_task(task)
             for task in tasks
         ]
-        
+
         return TaskList(tasks=task_list)
     finally:
         session.close()
 
 
 @mcp.tool()
-def list_weekly_goals(date: Optional[datetime] = None) -> WeeklyGoalList:
+def list_weekly_goals(input_date: Optional[datetime] = None) -> WeeklyGoalList:
     """List weekly goals for a specific week
 
     If date is not provided, defaults to the current week.
@@ -1713,7 +1758,7 @@ def list_weekly_goals(date: Optional[datetime] = None) -> WeeklyGoalList:
     session = DBSession()
     try:
         # If date is not provided, use the current date
-        target_date = date or datetime.now(timezone.utc)
+        target_date = input_date or datetime.now(timezone.utc)
 
         # Calculate the start of the week (Monday)
         # weekday() returns 0 for Monday, 6 for Sunday
@@ -1835,21 +1880,21 @@ def log_habit(habit_data: LogHabitRequest) -> HabitResponse:
         goal = session.query(WeeklyGoalModel).filter(
             WeeklyGoalModel.id == habit_data.goal_id
         ).first()
-        
+
         if not goal:
             return HabitResponse(
                 success=False,
                 message=f"Goal with ID {habit_data.goal_id} not found",
                 goal_id=habit_data.goal_id
             )
-        
+
         if goal.goal_type != 'habit':
             return HabitResponse(
                 success=False,
                 message=f"Goal '{goal.title}' is not a habit goal",
                 goal_id=habit_data.goal_id
             )
-        
+
         # Parse the logged date or use today
         if habit_data.logged_date:
             try:
@@ -1862,20 +1907,20 @@ def log_habit(habit_data: LogHabitRequest) -> HabitResponse:
                 )
         else:
             logged_date = date.today()
-        
+
         # Check if already logged for this date
         existing_log = session.query(HabitLogModel).filter(
             HabitLogModel.goal_id == habit_data.goal_id,
             HabitLogModel.logged_date == logged_date
         ).first()
-        
+
         if existing_log:
             return HabitResponse(
                 success=False,
                 message=f"Habit already logged for {logged_date}",
                 goal_id=habit_data.goal_id
             )
-        
+
         # Create new habit log
         new_log = HabitLogModel(
             goal_id=habit_data.goal_id,
@@ -1884,10 +1929,10 @@ def log_habit(habit_data: LogHabitRequest) -> HabitResponse:
             notes=habit_data.notes,
             created_ts=datetime.now(timezone.utc)
         )
-        
+
         session.add(new_log)
         session.commit()
-        
+
         # Serialize the log for response
         habit_log = {
             'id': new_log.id,
@@ -1897,11 +1942,11 @@ def log_habit(habit_data: LogHabitRequest) -> HabitResponse:
             'notes': new_log.notes,
             'created_ts': new_log.created_ts
         }
-        
+
         message = f"Habit '{goal.title}' logged for {logged_date}"
         if habit_data.duration_minutes:
             message += f" ({habit_data.duration_minutes} minutes)"
-        
+
         return HabitResponse(
             success=True,
             message=message,
@@ -1928,7 +1973,7 @@ def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
         goal = session.query(WeeklyGoalModel).filter(
             WeeklyGoalModel.id == goal_id
         ).first()
-        
+
         if not goal:
             return HabitInsightsResponse(
                 success=False,
@@ -1939,7 +1984,7 @@ def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
                 total_completions=0,
                 total_time=0
             )
-        
+
         if goal.goal_type != 'habit':
             return HabitInsightsResponse(
                 success=False,
@@ -1950,27 +1995,27 @@ def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
                 total_completions=0,
                 total_time=0
             )
-        
+
         # Calculate date range
         end_date = date.today()
         start_date = end_date - timedelta(days=days-1)
-        
+
         # Get habit logs in the date range
         habit_logs = session.query(HabitLogModel).filter(
             HabitLogModel.goal_id == goal_id,
             HabitLogModel.logged_date >= start_date,
             HabitLogModel.logged_date <= end_date
         ).order_by(HabitLogModel.logged_date.desc()).all()
-        
+
         # Calculate metrics
         total_completions = len(habit_logs)
         frequency_text = f"{total_completions}/{days} days"
-        
+
         # Calculate duration metrics
         durations = [log.duration_minutes for log in habit_logs if log.duration_minutes is not None]
         avg_duration = sum(durations) / len(durations) if len(durations) > 0 else None
         total_time = sum(durations) if durations else 0
-        
+
         # Format recent entries (last 10)
         recent_entries = [
             {
@@ -1980,7 +2025,7 @@ def get_habit_insights(goal_id: int, days: int = 7) -> HabitInsightsResponse:
             }
             for log in habit_logs[:10]
         ]
-        
+
         return HabitInsightsResponse(
             success=True,
             goal_id=goal_id,
