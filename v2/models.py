@@ -2,10 +2,10 @@
 SQLAlchemy and Pydantic models for the v2 task management system.
 '''
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
@@ -46,7 +46,7 @@ class WeeklyGoalModel(Base):
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )
 
@@ -102,7 +102,7 @@ class TaskModel(Base):
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )
     completed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -127,7 +127,7 @@ class SessionModel(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     started_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -139,7 +139,11 @@ class SessionModel(Base):
         CheckConstraint('energy_level BETWEEN 1 AND 5'),
         nullable=True
     )
-    focus_area: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    focus_area: Mapped[Optional[str]] = mapped_column(
+        Text,
+        CheckConstraint("focus_area IN ('grow', 'maintain', 'sustain')"),
+        nullable=True
+    )
 
     # Outcomes
     tasks_completed: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -176,7 +180,7 @@ class WorkEntryModel(Base):
 
     started_at: Mapped[datetime] = mapped_column(
         DateTime,
-        default=datetime.utcnow,
+        default=lambda: datetime.now(timezone.utc),
         nullable=False
     )
     ended_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
@@ -228,11 +232,9 @@ class WeeklyGoal(BaseModel):
     category: Optional[CategoryType] = None
     week_start: datetime
     status: GoalStatusType = 'active'
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    class Config:
-        '''Enable ORM mode for SQLAlchemy compatibility.'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Task(BaseModel):
@@ -251,16 +253,8 @@ class Task(BaseModel):
     times_rejected: int = Field(default=0, ge=0)
     avg_energy_after: Optional[float] = Field(None, ge=1.0, le=5.0)
     goal_id: Optional[int] = None
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
-
-    @field_validator('actual_minutes')
-    @classmethod
-    def validate_actual_minutes(cls, v: Optional[int]) -> Optional[int]:
-        '''Validate that actual_minutes is positive if provided.'''
-        if v is not None and v <= 0:
-            raise ValueError('actual_minutes must be positive')
-        return v
 
     @field_validator('completed_at')
     @classmethod
@@ -271,16 +265,14 @@ class Task(BaseModel):
             raise ValueError('completed_at can only be set when state is done or archived')
         return v
 
-    class Config:
-        '''Enable ORM mode for SQLAlchemy compatibility.'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Session(BaseModel):
     '''Pydantic model for work sessions.'''
 
     id: Optional[int] = None
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: Optional[datetime] = None
     available_minutes: Optional[int] = Field(None, gt=0, le=1440)
     energy_level: Optional[int] = Field(None, ge=1, le=5)
@@ -297,9 +289,7 @@ class Session(BaseModel):
             raise ValueError('ended_at must be after started_at')
         return v
 
-    class Config:
-        '''Enable ORM mode for SQLAlchemy compatibility.'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkEntry(BaseModel):
@@ -308,7 +298,7 @@ class WorkEntry(BaseModel):
     id: Optional[int] = None
     session_id: int
     task_id: int
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     ended_at: Optional[datetime] = None
     completed: bool = False
     energy_after: Optional[int] = Field(None, ge=1, le=5)
@@ -333,9 +323,7 @@ class WorkEntry(BaseModel):
             raise ValueError('abandoned_reason should not be set when completed is True')
         return v
 
-    class Config:
-        '''Enable ORM mode for SQLAlchemy compatibility.'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Database utilities
