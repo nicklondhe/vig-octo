@@ -2,13 +2,14 @@
 SQLAlchemy and Pydantic models for the v2 task management system.
 '''
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -37,7 +38,7 @@ class WeeklyGoalModel(Base):
         CheckConstraint("category IN ('grow', 'maintain', 'sustain')"),
         nullable=True
     )
-    week_start: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    week_start: Mapped[date] = mapped_column(Date, nullable=False)
     status: Mapped[str] = mapped_column(
         Text,
         CheckConstraint("status IN ('active', 'completed', 'archived')"),
@@ -230,7 +231,7 @@ class WeeklyGoal(BaseModel):
     title: str = Field(..., min_length=1, max_length=500)
     description: Optional[str] = Field(None, max_length=2000)
     category: Optional[CategoryType] = None
-    week_start: datetime
+    week_start: date
     status: GoalStatusType = 'active'
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
