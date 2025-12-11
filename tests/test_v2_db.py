@@ -1,12 +1,14 @@
 '''
 Unit tests for v2 TaskDB class.
 '''
-import pytest
-from datetime import date, timedelta
+# pylint: disable=redefined-outer-name
+from datetime import timedelta
 from sqlalchemy import create_engine, event
 
+import pytest
+
 from v2.db import TaskDB
-from v2.models import Base, WeeklyGoal
+from v2.models import Base, Task, WeeklyGoal
 from v2.util import get_week_start
 
 
@@ -571,3 +573,553 @@ class TestEdgeCases:
 
         updated = task_db.update_goal_status(created.id, 'completed')
         assert isinstance(updated, WeeklyGoal)
+
+
+# Task CRUD Tests
+
+
+class TestCreateTask:
+    '''Tests for create_task method.'''
+
+    def test_create_basic_task(self, task_db):
+        '''Test creating a basic task.'''
+        task = task_db.create_task(
+            title='Write tests',
+            category='grow'
+        )
+
+        assert task.id is not None
+        assert task.title == 'Write tests'
+        assert task.category == 'grow'
+        assert task.state == 'ready'
+        assert task.repeatable is False
+        assert task.est_minutes is None
+        assert task.goal_id is None
+        assert task.created_at is not None
+
+    def test_create_task_with_all_fields(self, task_db):
+        '''Test creating a task with all optional fields.'''
+        week_start = get_week_start()
+        goal = task_db.create_weekly_goal('Test Goal', week_start)
+
+        task = task_db.create_task(
+            title='Complex task',
+            category='maintain',
+            est_minutes=60,
+            repeatable=True,
+            goal_id=goal.id,
+            state='active'
+        )
+
+        assert task.id is not None
+        assert task.title == 'Complex task'
+        assert task.category == 'maintain'
+        assert task.est_minutes == 60
+        assert task.repeatable is True
+        assert task.goal_id == goal.id
+        assert task.state == 'active'
+
+    def test_create_task_with_different_categories(self, task_db):
+        '''Test creating tasks with different categories.'''
+        for category in ['grow', 'maintain', 'sustain']:
+            task = task_db.create_task(
+                title=f'Test {category}',
+                category=category
+            )
+            assert task.category == category
+
+    def test_create_task_with_different_states(self, task_db):
+        '''Test creating tasks with different states.'''
+        for state in ['ready', 'active', 'done', 'archived']:
+            task = task_db.create_task(
+                title=f'Test {state}',
+                category='grow',
+                state=state
+            )
+            assert task.state == state
+
+    def test_create_repeatable_task(self, task_db):
+        '''Test creating a repeatable task.'''
+        task = task_db.create_task(
+            title='Daily review',
+            category='maintain',
+            repeatable=True
+        )
+
+        assert task.repeatable is True
+        assert task.last_completed_at is None
+
+
+class TestGetTask:
+    '''Tests for get_task and get_tasks_by_* methods.'''
+
+    def test_get_existing_task(self, task_db):
+        '''Test getting an existing task by ID.'''
+        created_task = task_db.create_task(
+            title='Test Task',
+            category='grow'
+        )
+
+        retrieved_task = task_db.get_task(created_task.id)
+
+        assert retrieved_task is not None
+        assert retrieved_task.id == created_task.id
+        assert retrieved_task.title == created_task.title
+
+    def test_get_nonexistent_task(self, task_db):
+        '''Test getting a task with non-existent ID returns None.'''
+        task = task_db.get_task(999)
+        assert task is None
+
+    def test_get_tasks_by_state(self, task_db):
+        '''Test getting tasks by state.'''
+        task_db.create_task('Ready 1', 'grow', state='ready')
+        task_db.create_task('Ready 2', 'maintain', state='ready')
+        active_task = task_db.create_task('Active', 'grow', state='active')
+        task_db.create_task('Done', 'sustain', state='done')
+
+        ready_tasks = task_db.get_tasks_by_state('ready')
+        active_tasks = task_db.get_tasks_by_state('active')
+
+        assert len(ready_tasks) == 2
+        assert len(active_tasks) == 1
+        assert active_tasks[0].id == active_task.id
+
+    def test_get_tasks_by_goal(self, task_db):
+        '''Test getting tasks by goal ID.'''
+        week_start = get_week_start()
+        goal1 = task_db.create_weekly_goal('Goal 1', week_start)
+        goal2 = task_db.create_weekly_goal('Goal 2', week_start)
+
+        task1 = task_db.create_task('Task 1', 'grow', goal_id=goal1.id)
+        task2 = task_db.create_task('Task 2', 'maintain', goal_id=goal1.id)
+        task_db.create_task('Task 3', 'sustain', goal_id=goal2.id)
+
+        goal1_tasks = task_db.get_tasks_by_goal(goal1.id)
+
+        assert len(goal1_tasks) == 2
+        task_ids = [t.id for t in goal1_tasks]
+        assert task1.id in task_ids
+        assert task2.id in task_ids
+
+    def test_get_tasks_by_category(self, task_db):
+        '''Test getting tasks by category.'''
+        task_db.create_task('Grow 1', 'grow')
+        grow_task2 = task_db.create_task('Grow 2', 'grow')
+        task_db.create_task('Maintain', 'maintain')
+
+        grow_tasks = task_db.get_tasks_by_category('grow')
+
+        assert len(grow_tasks) == 2
+        assert grow_task2.id in [t.id for t in grow_tasks]
+
+    def test_get_all_tasks_no_filters(self, task_db):
+        '''Test getting all tasks without filters.'''
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        tasks = task_db.get_all_tasks()
+
+        assert len(tasks) == 2
+        task_ids = [t.id for t in tasks]
+        assert task1.id in task_ids
+        assert task2.id in task_ids
+
+    def test_get_all_tasks_with_filters(self, task_db):
+        '''Test getting all tasks with multiple filters.'''
+        week_start = get_week_start()
+        goal = task_db.create_weekly_goal('Goal', week_start)
+
+        target_task = task_db.create_task(
+            'Target',
+            'grow',
+            goal_id=goal.id,
+            state='active',
+            repeatable=True
+        )
+        task_db.create_task('Other 1', 'maintain', goal_id=goal.id, state='active')
+        task_db.create_task('Other 2', 'grow', state='ready')
+
+        filtered = task_db.get_all_tasks(
+            state='active',
+            category='grow',
+            goal_id=goal.id,
+            repeatable=True
+        )
+
+        assert len(filtered) == 1
+        assert filtered[0].id == target_task.id
+
+
+class TestUpdateTask:
+    '''Tests for update_task and related methods.'''
+
+    def test_update_task_title(self, task_db):
+        '''Test updating task title.'''
+        task = task_db.create_task('Old Title', 'grow')
+
+        updated_task = task_db.update_task(task.id, title='New Title')
+
+        assert updated_task is not None
+        assert updated_task.title == 'New Title'
+
+    def test_update_task_multiple_fields(self, task_db):
+        '''Test updating multiple task fields at once.'''
+        task = task_db.create_task('Task', 'grow')
+
+        updated_task = task_db.update_task(
+            task.id,
+            title='Updated',
+            category='maintain',
+            est_minutes=45,
+            actual_minutes=50
+        )
+
+        assert updated_task.title == 'Updated'
+        assert updated_task.category == 'maintain'
+        assert updated_task.est_minutes == 45
+        assert updated_task.actual_minutes == 50
+
+    def test_update_task_state(self, task_db):
+        '''Test updating task state.'''
+        task = task_db.create_task('Task', 'grow', state='ready')
+
+        updated_task = task_db.update_task_state(task.id, 'active')
+
+        assert updated_task is not None
+        assert updated_task.state == 'active'
+
+    def test_update_task_state_to_done_sets_completed_at(self, task_db):
+        '''Test that changing state to done sets completed_at.'''
+        task = task_db.create_task('Task', 'grow', state='ready')
+
+        updated_task = task_db.update_task(task.id, state='done')
+
+        assert updated_task.state == 'done'
+        assert updated_task.completed_at is not None
+
+    def test_update_task_state_to_done_for_repeatable_sets_last_completed(self, task_db):
+        '''Test that marking repeatable task as done sets last_completed_at.'''
+        task = task_db.create_task('Daily task', 'maintain', repeatable=True)
+
+        updated_task = task_db.update_task(task.id, state='done')
+
+        assert updated_task.state == 'done'
+        assert updated_task.completed_at is not None
+        assert updated_task.last_completed_at is not None
+
+    def test_mark_task_completed(self, task_db):
+        '''Test mark_task_completed convenience method.'''
+        task = task_db.create_task('Task', 'grow')
+
+        completed_task = task_db.mark_task_completed(task.id, actual_minutes=30)
+
+        assert completed_task.state == 'done'
+        assert completed_task.actual_minutes == 30
+        assert completed_task.completed_at is not None
+
+    def test_mark_repeatable_task_completed(self, task_db):
+        '''Test marking repeatable task as completed.'''
+        task = task_db.create_task('Repeatable', 'maintain', repeatable=True)
+
+        completed_task = task_db.mark_task_completed(task.id)
+
+        assert completed_task.state == 'done'
+        assert completed_task.last_completed_at is not None
+
+    def test_archive_task(self, task_db):
+        '''Test archiving a task.'''
+        task = task_db.create_task('Task', 'grow')
+
+        archived_task = task_db.archive_task(task.id)
+
+        assert archived_task is not None
+        assert archived_task.state == 'archived'
+
+    def test_update_nonexistent_task(self, task_db):
+        '''Test updating non-existent task returns None.'''
+        result = task_db.update_task(999, title='New')
+        assert result is None
+
+    def test_update_preserves_other_fields(self, task_db):
+        '''Test that updating one field doesn't change others.'''
+        task = task_db.create_task(
+            'Task',
+            'grow',
+            est_minutes=60,
+            repeatable=True
+        )
+
+        updated_task = task_db.update_task(task.id, title='Updated')
+
+        assert updated_task.title == 'Updated'
+        assert updated_task.category == 'grow'
+        assert updated_task.est_minutes == 60
+        assert updated_task.repeatable is True
+
+
+class TestLearningOperations:
+    '''Tests for learning and stats operations.'''
+
+    def test_increment_task_stat_suggested(self, task_db):
+        '''Test incrementing times_suggested stat.'''
+        task = task_db.create_task('Task', 'grow')
+
+        updated_task = task_db.increment_task_stat(task.id, 'suggested')
+
+        assert updated_task is not None
+        assert updated_task.times_suggested == 1
+        assert updated_task.times_accepted == 0
+        assert updated_task.times_rejected == 0
+
+    def test_increment_task_stat_accepted(self, task_db):
+        '''Test incrementing times_accepted stat.'''
+        task = task_db.create_task('Task', 'grow')
+
+        task_db.increment_task_stat(task.id, 'accepted')
+        updated_task = task_db.increment_task_stat(task.id, 'accepted')
+
+        assert updated_task.times_accepted == 2
+
+    def test_increment_task_stat_rejected(self, task_db):
+        '''Test incrementing times_rejected stat.'''
+        task = task_db.create_task('Task', 'grow')
+
+        updated_task = task_db.increment_task_stat(task.id, 'rejected')
+
+        assert updated_task.times_rejected == 1
+
+    def test_increment_multiple_stats(self, task_db):
+        '''Test incrementing multiple stats on same task.'''
+        task = task_db.create_task('Task', 'grow')
+
+        task_db.increment_task_stat(task.id, 'suggested')
+        task_db.increment_task_stat(task.id, 'suggested')
+        task_db.increment_task_stat(task.id, 'accepted')
+
+        updated_task = task_db.get_task(task.id)
+
+        assert updated_task.times_suggested == 2
+        assert updated_task.times_accepted == 1
+        assert updated_task.times_rejected == 0
+
+    def test_update_task_learning_actual_minutes(self, task_db):
+        '''Test updating actual_minutes via update_task_learning.'''
+        task = task_db.create_task('Task', 'grow')
+
+        updated_task = task_db.update_task_learning(task.id, actual_minutes=45)
+
+        assert updated_task is not None
+        assert updated_task.actual_minutes == 45
+
+    def test_update_task_learning_energy_after_first_time(self, task_db):
+        '''Test updating energy_after for first time sets avg_energy_after.'''
+        task = task_db.create_task('Task', 'grow')
+
+        updated_task = task_db.update_task_learning(task.id, energy_after=4.0)
+
+        assert updated_task.avg_energy_after == 4.0
+
+    def test_update_task_learning_energy_after_calculates_average(self, task_db):
+        '''Test that energy_after updates calculate running average.'''
+        task = task_db.create_task('Task', 'grow')
+
+        task_db.update_task_learning(task.id, energy_after=4.0)
+        updated_task = task_db.update_task_learning(task.id, energy_after=2.0)
+
+        # Average of 4.0 and 2.0 should be 3.0
+        assert updated_task.avg_energy_after == 3.0
+
+    def test_update_task_learning_both_fields(self, task_db):
+        '''Test updating both actual_minutes and energy_after.'''
+        task = task_db.create_task('Task', 'grow')
+
+        updated_task = task_db.update_task_learning(
+            task.id,
+            actual_minutes=60,
+            energy_after=5.0
+        )
+
+        assert updated_task.actual_minutes == 60
+        assert updated_task.avg_energy_after == 5.0
+
+
+class TestRepeatableOperations:
+    '''Tests for repeatable task operations.'''
+
+    def test_get_completed_repeatables_empty(self, task_db):
+        '''Test getting completed repeatables when none exist.'''
+        repeatables = task_db.get_completed_repeatables()
+        assert repeatables == []
+
+    def test_get_completed_repeatables(self, task_db):
+        '''Test getting completed repeatable tasks.'''
+        task1 = task_db.create_task('Daily 1', 'maintain', repeatable=True)
+        task2 = task_db.create_task('Daily 2', 'sustain', repeatable=True)
+        task_db.create_task('Not Repeatable', 'grow', repeatable=False)
+
+        # Complete the repeatable tasks
+        task_db.mark_task_completed(task1.id)
+        task_db.mark_task_completed(task2.id)
+
+        repeatables = task_db.get_completed_repeatables()
+
+        assert len(repeatables) == 2
+        task_ids = [t.id for t in repeatables]
+        assert task1.id in task_ids
+        assert task2.id in task_ids
+
+    def test_get_completed_repeatables_excludes_uncompleted(self, task_db):
+        '''Test that get_completed_repeatables excludes uncompleted ones.'''
+        completed = task_db.create_task('Completed', 'maintain', repeatable=True)
+        task_db.create_task('Not Completed', 'maintain', repeatable=True)
+
+        task_db.mark_task_completed(completed.id)
+
+        repeatables = task_db.get_completed_repeatables()
+
+        assert len(repeatables) == 1
+        assert repeatables[0].id == completed.id
+
+    def test_get_completed_repeatables_filter_by_category(self, task_db):
+        '''Test filtering completed repeatables by category.'''
+        grow_task = task_db.create_task('Grow', 'grow', repeatable=True)
+        maintain_task = task_db.create_task('Maintain', 'maintain', repeatable=True)
+
+        task_db.mark_task_completed(grow_task.id)
+        task_db.mark_task_completed(maintain_task.id)
+
+        grow_repeatables = task_db.get_completed_repeatables(category='grow')
+
+        assert len(grow_repeatables) == 1
+        assert grow_repeatables[0].id == grow_task.id
+
+    def test_reset_tasks(self, task_db):
+        '''Test resetting tasks to ready state.'''
+        task1 = task_db.create_task('Task 1', 'grow', state='done')
+        task2 = task_db.create_task('Task 2', 'maintain', state='done')
+
+        reset_tasks = task_db.reset_tasks([task1.id, task2.id])
+
+        assert len(reset_tasks) == 2
+        for task in reset_tasks:
+            assert task.state == 'ready'
+            assert task.completed_at is None
+
+    def test_reset_tasks_preserves_learning_data(self, task_db):
+        '''Test that resetting tasks preserves learning stats.'''
+        task = task_db.create_task('Task', 'grow')
+        task_db.increment_task_stat(task.id, 'suggested')
+        task_db.increment_task_stat(task.id, 'accepted')
+        task_db.mark_task_completed(task.id)
+
+        reset_tasks = task_db.reset_tasks([task.id])
+
+        reset_task = reset_tasks[0]
+        assert reset_task.state == 'ready'
+        assert reset_task.completed_at is None
+        assert reset_task.times_suggested == 1
+        assert reset_task.times_accepted == 1
+
+    def test_reset_repeatable_task_preserves_last_completed(self, task_db):
+        '''Test that resetting repeatable task preserves last_completed_at.'''
+        task = task_db.create_task('Repeatable', 'maintain', repeatable=True)
+        task_db.mark_task_completed(task.id)
+
+        completed_task = task_db.get_task(task.id)
+        original_last_completed = completed_task.last_completed_at
+
+        reset_tasks = task_db.reset_tasks([task.id])
+
+        assert reset_tasks[0].state == 'ready'
+        assert reset_tasks[0].last_completed_at == original_last_completed
+
+    def test_reset_tasks_with_nonexistent_ids(self, task_db):
+        '''Test resetting with some non-existent IDs.'''
+        task = task_db.create_task('Task', 'grow', state='done')
+
+        reset_tasks = task_db.reset_tasks([task.id, 999])
+
+        # Should only reset the existing task
+        assert len(reset_tasks) == 1
+        assert reset_tasks[0].id == task.id
+
+    def test_clear_repeatable_history(self, task_db):
+        '''Test clearing last_completed_at for repeatable task.'''
+        task = task_db.create_task('Repeatable', 'maintain', repeatable=True)
+        task_db.mark_task_completed(task.id)
+
+        # Verify it was set
+        completed_task = task_db.get_task(task.id)
+        assert completed_task.last_completed_at is not None
+
+        # Clear the history
+        cleared_task = task_db.clear_repeatable_history(task.id)
+
+        assert cleared_task is not None
+        assert cleared_task.last_completed_at is None
+
+    def test_clear_repeatable_history_nonexistent_task(self, task_db):
+        '''Test clearing history for non-existent task returns None.'''
+        result = task_db.clear_repeatable_history(999)
+        assert result is None
+
+
+class TestTaskEdgeCases:
+    '''Tests for edge cases and boundary conditions.'''
+
+    def test_pydantic_model_returned(self, task_db):
+        '''Test that all methods return Pydantic Task instances.'''
+        created = task_db.create_task('Task', 'grow')
+        assert isinstance(created, Task)
+
+        retrieved = task_db.get_task(created.id)
+        assert isinstance(retrieved, Task)
+
+        tasks_list = task_db.get_all_tasks()
+        assert all(isinstance(t, Task) for t in tasks_list)
+
+        updated = task_db.update_task(created.id, title='Updated')
+        assert isinstance(updated, Task)
+
+    def test_create_task_linked_to_goal(self, task_db):
+        '''Test creating task linked to a goal.'''
+        week_start = get_week_start()
+        goal = task_db.create_weekly_goal('Goal', week_start)
+
+        task = task_db.create_task('Task', 'grow', goal_id=goal.id)
+
+        assert task.goal_id == goal.id
+
+        # Verify we can retrieve tasks by goal
+        goal_tasks = task_db.get_tasks_by_goal(goal.id)
+        assert len(goal_tasks) == 1
+        assert goal_tasks[0].id == task.id
+
+    def test_multiple_state_transitions(self, task_db):
+        '''Test multiple state transitions on same task.'''
+        task = task_db.create_task('Task', 'grow')
+
+        task_db.update_task_state(task.id, 'active')
+        task_db.update_task_state(task.id, 'done')
+        task_db.update_task_state(task.id, 'archived')
+        final_task = task_db.update_task_state(task.id, 'ready')
+
+        assert final_task.state == 'ready'
+
+    def test_update_with_none_values_ignores_fields(self, task_db):
+        '''Test that None values don't update fields.'''
+        task = task_db.create_task(
+            'Original',
+            'grow',
+            est_minutes=60
+        )
+
+        updated_task = task_db.update_task(
+            task.id,
+            title=None,
+            est_minutes=None
+        )
+
+        assert updated_task.title == 'Original'
+        assert updated_task.est_minutes == 60
