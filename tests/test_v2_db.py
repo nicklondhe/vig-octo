@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event
 import pytest
 
 from v2.db import TaskDB
-from v2.models import Base, Session, Task, WeeklyGoal
+from v2.models import Base, Session, Task, WeeklyGoal, WorkEntry
 from v2.util import get_week_start
 
 
@@ -1532,3 +1532,560 @@ class TestSessionEdgeCases:
         assert session1.id != session2.id
         # Timestamps should be close but session2 should be >= session1
         assert session2.started_at >= session1.started_at
+
+
+# Work Entry CRUD Tests
+
+
+class TestStartWorkEntry:
+    '''Tests for start_work_entry method.'''
+
+    def test_start_basic_work_entry(self, task_db):
+        '''Test starting a basic work entry.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        assert work_entry.id is not None
+        assert work_entry.session_id == session.id
+        assert work_entry.task_id == task.id
+        assert work_entry.started_at is not None
+        assert work_entry.ended_at is None
+        assert work_entry.completed is False
+        assert work_entry.energy_after is None
+        assert work_entry.want_more_like_this is None
+        assert work_entry.abandoned_reason is None
+
+    def test_start_multiple_work_entries_same_session(self, task_db):
+        '''Test starting multiple work entries in the same session.'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        work_entry1 = task_db.start_work_entry(session.id, task1.id)
+        work_entry2 = task_db.start_work_entry(session.id, task2.id)
+
+        assert work_entry1.id != work_entry2.id
+        assert work_entry1.session_id == session.id
+        assert work_entry2.session_id == session.id
+
+    def test_start_work_entry_different_sessions_same_task(self, task_db):
+        '''Test starting work entries for same task in different sessions.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        task = task_db.create_task('Repeatable Task', 'grow', repeatable=True)
+
+        work_entry1 = task_db.start_work_entry(session1.id, task.id)
+        work_entry2 = task_db.start_work_entry(session2.id, task.id)
+
+        assert work_entry1.id != work_entry2.id
+        assert work_entry1.task_id == task.id
+        assert work_entry2.task_id == task.id
+        assert work_entry1.session_id == session1.id
+        assert work_entry2.session_id == session2.id
+
+
+class TestGetWorkEntry:
+    '''Tests for get_work_entry method.'''
+
+    def test_get_existing_work_entry(self, task_db):
+        '''Test getting an existing work entry by ID.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        created_entry = task_db.start_work_entry(session.id, task.id)
+
+        retrieved_entry = task_db.get_work_entry(created_entry.id)
+
+        assert retrieved_entry is not None
+        assert retrieved_entry.id == created_entry.id
+        assert retrieved_entry.session_id == session.id
+        assert retrieved_entry.task_id == task.id
+
+    def test_get_nonexistent_work_entry(self, task_db):
+        '''Test getting a work entry with non-existent ID returns None.'''
+        entry = task_db.get_work_entry(999)
+        assert entry is None
+
+    def test_get_work_entry_preserves_all_fields(self, task_db):
+        '''Test getting a work entry preserves all fields.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        created_entry = task_db.start_work_entry(session.id, task.id)
+        task_db.end_work_entry(
+            created_entry.id,
+            completed=True,
+            energy_after=4,
+            want_more_like_this=True
+        )
+
+        retrieved_entry = task_db.get_work_entry(created_entry.id)
+
+        assert retrieved_entry.completed is True
+        assert retrieved_entry.energy_after == 4
+        assert retrieved_entry.want_more_like_this is True
+
+
+class TestEndWorkEntry:
+    '''Tests for end_work_entry method.'''
+
+    def test_end_work_entry_basic(self, task_db):
+        '''Test ending a work entry sets ended_at.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        ended_entry = task_db.end_work_entry(work_entry.id)
+
+        assert ended_entry is not None
+        assert ended_entry.ended_at is not None
+        assert ended_entry.ended_at > work_entry.started_at
+        assert ended_entry.completed is False
+
+    def test_end_work_entry_completed(self, task_db):
+        '''Test ending a work entry as completed.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        ended_entry = task_db.end_work_entry(work_entry.id, completed=True)
+
+        assert ended_entry.completed is True
+
+    def test_end_work_entry_with_energy_after(self, task_db):
+        '''Test ending a work entry with energy_after rating.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        ended_entry = task_db.end_work_entry(work_entry.id, energy_after=5)
+
+        assert ended_entry.energy_after == 5
+
+    def test_end_work_entry_with_want_more_like_this(self, task_db):
+        '''Test ending a work entry with want_more_like_this flag.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        ended_entry = task_db.end_work_entry(
+            work_entry.id,
+            completed=True,
+            want_more_like_this=True
+        )
+
+        assert ended_entry.want_more_like_this is True
+
+    def test_end_work_entry_with_abandoned_reason(self, task_db):
+        '''Test ending a work entry with abandoned_reason.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        ended_entry = task_db.end_work_entry(
+            work_entry.id,
+            completed=False,
+            abandoned_reason='blocked'
+        )
+
+        assert ended_entry.completed is False
+        assert ended_entry.abandoned_reason == 'blocked'
+
+    def test_end_work_entry_with_all_fields(self, task_db):
+        '''Test ending a work entry with all optional fields.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        ended_entry = task_db.end_work_entry(
+            work_entry.id,
+            completed=True,
+            energy_after=4,
+            want_more_like_this=True
+        )
+
+        assert ended_entry.ended_at is not None
+        assert ended_entry.completed is True
+        assert ended_entry.energy_after == 4
+        assert ended_entry.want_more_like_this is True
+
+    def test_end_work_entry_nonexistent(self, task_db):
+        '''Test ending a non-existent work entry returns None.'''
+        result = task_db.end_work_entry(999)
+        assert result is None
+
+    def test_end_work_entry_different_abandoned_reasons(self, task_db):
+        '''Test ending work entries with different abandoned reasons.'''
+        session = task_db.create_session()
+        reasons = ['blocked', 'too_hard', 'wrong_time', 'not_important', 'distracted']
+
+        for reason in reasons:
+            task = task_db.create_task(f'Task {reason}', 'grow')
+            work_entry = task_db.start_work_entry(session.id, task.id)
+            ended_entry = task_db.end_work_entry(
+                work_entry.id,
+                abandoned_reason=reason
+            )
+            assert ended_entry.abandoned_reason == reason
+
+
+class TestGetWorkEntriesBySession:
+    '''Tests for get_work_entries_by_session method.'''
+
+    def test_get_work_entries_by_session_empty(self, task_db):
+        '''Test getting work entries for a session with none.'''
+        session = task_db.create_session()
+        entries = task_db.get_work_entries_by_session(session.id)
+        assert entries == []
+
+    def test_get_work_entries_by_session(self, task_db):
+        '''Test getting work entries for a session.'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        entry1 = task_db.start_work_entry(session.id, task1.id)
+        entry2 = task_db.start_work_entry(session.id, task2.id)
+
+        entries = task_db.get_work_entries_by_session(session.id)
+
+        assert len(entries) == 2
+        entry_ids = [e.id for e in entries]
+        assert entry1.id in entry_ids
+        assert entry2.id in entry_ids
+
+    def test_get_work_entries_filters_by_session(self, task_db):
+        '''Test that get_work_entries_by_session only returns entries for specific session.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+
+        entry1 = task_db.start_work_entry(session1.id, task.id)
+        task_db.start_work_entry(session2.id, task.id)
+
+        session1_entries = task_db.get_work_entries_by_session(session1.id)
+
+        assert len(session1_entries) == 1
+        assert session1_entries[0].id == entry1.id
+
+    def test_get_work_entries_ordered_by_started_at(self, task_db):
+        '''Test that work entries are ordered by started_at.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+
+        entry1 = task_db.start_work_entry(session.id, task.id)
+        entry2 = task_db.start_work_entry(session.id, task.id)
+        entry3 = task_db.start_work_entry(session.id, task.id)
+
+        entries = task_db.get_work_entries_by_session(session.id)
+
+        assert entries[0].id == entry1.id
+        assert entries[1].id == entry2.id
+        assert entries[2].id == entry3.id
+
+
+class TestGetWorkEntriesByTask:
+    '''Tests for get_work_entries_by_task method.'''
+
+    def test_get_work_entries_by_task_empty(self, task_db):
+        '''Test getting work entries for a task with none.'''
+        task = task_db.create_task('Task', 'grow')
+        entries = task_db.get_work_entries_by_task(task.id)
+        assert entries == []
+
+    def test_get_work_entries_by_task(self, task_db):
+        '''Test getting work entries for a task.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        task = task_db.create_task('Repeatable Task', 'grow', repeatable=True)
+
+        entry1 = task_db.start_work_entry(session1.id, task.id)
+        entry2 = task_db.start_work_entry(session2.id, task.id)
+
+        entries = task_db.get_work_entries_by_task(task.id)
+
+        assert len(entries) == 2
+        entry_ids = [e.id for e in entries]
+        assert entry1.id in entry_ids
+        assert entry2.id in entry_ids
+
+    def test_get_work_entries_filters_by_task(self, task_db):
+        '''Test that get_work_entries_by_task only returns entries for specific task.'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        entry1 = task_db.start_work_entry(session.id, task1.id)
+        task_db.start_work_entry(session.id, task2.id)
+
+        task1_entries = task_db.get_work_entries_by_task(task1.id)
+
+        assert len(task1_entries) == 1
+        assert task1_entries[0].id == entry1.id
+
+    def test_get_work_entries_ordered_by_started_desc(self, task_db):
+        '''Test that work entries are ordered by started_at descending.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow', repeatable=True)
+
+        entry1 = task_db.start_work_entry(session.id, task.id)
+        entry2 = task_db.start_work_entry(session.id, task.id)
+        entry3 = task_db.start_work_entry(session.id, task.id)
+
+        entries = task_db.get_work_entries_by_task(task.id)
+
+        # Should be in descending order (most recent first)
+        assert entries[0].id == entry3.id
+        assert entries[1].id == entry2.id
+        assert entries[2].id == entry1.id
+
+
+class TestUpdateWorkEntry:
+    '''Tests for update_work_entry method.'''
+
+    def test_update_work_entry_completed(self, task_db):
+        '''Test updating work entry completed status.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        updated_entry = task_db.update_work_entry(work_entry.id, completed=True)
+
+        assert updated_entry is not None
+        assert updated_entry.completed is True
+
+    def test_update_work_entry_energy_after(self, task_db):
+        '''Test updating work entry energy_after.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        updated_entry = task_db.update_work_entry(work_entry.id, energy_after=3)
+
+        assert updated_entry.energy_after == 3
+
+    def test_update_work_entry_want_more_like_this(self, task_db):
+        '''Test updating work entry want_more_like_this.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        updated_entry = task_db.update_work_entry(
+            work_entry.id,
+            want_more_like_this=False
+        )
+
+        assert updated_entry.want_more_like_this is False
+
+    def test_update_work_entry_abandoned_reason(self, task_db):
+        '''Test updating work entry abandoned_reason.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        updated_entry = task_db.update_work_entry(
+            work_entry.id,
+            abandoned_reason='too_hard'
+        )
+
+        assert updated_entry.abandoned_reason == 'too_hard'
+
+    def test_update_work_entry_multiple_fields(self, task_db):
+        '''Test updating multiple work entry fields at once.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        updated_entry = task_db.update_work_entry(
+            work_entry.id,
+            completed=True,
+            energy_after=5,
+            want_more_like_this=True
+        )
+
+        assert updated_entry.completed is True
+        assert updated_entry.energy_after == 5
+        assert updated_entry.want_more_like_this is True
+
+    def test_update_work_entry_with_none_values_ignores_fields(self, task_db):
+        '''Test that None values don't update fields.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+        task_db.update_work_entry(work_entry.id, energy_after=4)
+
+        updated_entry = task_db.update_work_entry(
+            work_entry.id,
+            energy_after=None
+        )
+
+        assert updated_entry.energy_after == 4
+
+    def test_update_work_entry_nonexistent(self, task_db):
+        '''Test updating non-existent work entry returns None.'''
+        result = task_db.update_work_entry(999, completed=True)
+        assert result is None
+
+    def test_update_work_entry_persists(self, task_db):
+        '''Test that updates are persisted in database.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        task_db.update_work_entry(work_entry.id, completed=True)
+        retrieved_entry = task_db.get_work_entry(work_entry.id)
+
+        assert retrieved_entry.completed is True
+
+
+class TestGetAllWorkEntries:
+    '''Tests for get_all_work_entries method.'''
+
+    def test_get_all_work_entries_empty(self, task_db):
+        '''Test getting all work entries when none exist.'''
+        entries = task_db.get_all_work_entries()
+        assert entries == []
+
+    def test_get_all_work_entries(self, task_db):
+        '''Test getting all work entries without filters.'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        entry1 = task_db.start_work_entry(session.id, task1.id)
+        entry2 = task_db.start_work_entry(session.id, task2.id)
+
+        entries = task_db.get_all_work_entries()
+
+        assert len(entries) == 2
+        entry_ids = [e.id for e in entries]
+        assert entry1.id in entry_ids
+        assert entry2.id in entry_ids
+
+    def test_get_all_work_entries_filter_by_session(self, task_db):
+        '''Test filtering work entries by session_id.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+
+        entry1 = task_db.start_work_entry(session1.id, task.id)
+        task_db.start_work_entry(session2.id, task.id)
+
+        session1_entries = task_db.get_all_work_entries(session_id=session1.id)
+
+        assert len(session1_entries) == 1
+        assert session1_entries[0].id == entry1.id
+
+    def test_get_all_work_entries_filter_by_task(self, task_db):
+        '''Test filtering work entries by task_id.'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        entry1 = task_db.start_work_entry(session.id, task1.id)
+        task_db.start_work_entry(session.id, task2.id)
+
+        task1_entries = task_db.get_all_work_entries(task_id=task1.id)
+
+        assert len(task1_entries) == 1
+        assert task1_entries[0].id == entry1.id
+
+    def test_get_all_work_entries_filter_by_completed(self, task_db):
+        '''Test filtering work entries by completed status.'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+
+        entry1 = task_db.start_work_entry(session.id, task1.id)
+        entry2 = task_db.start_work_entry(session.id, task2.id)
+        task_db.end_work_entry(entry1.id, completed=True)
+        task_db.end_work_entry(entry2.id, completed=False)
+
+        completed_entries = task_db.get_all_work_entries(completed=True)
+
+        assert len(completed_entries) == 1
+        assert completed_entries[0].id == entry1.id
+
+    def test_get_all_work_entries_multiple_filters(self, task_db):
+        '''Test filtering work entries by multiple criteria.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+
+        entry1 = task_db.start_work_entry(session1.id, task.id)
+        task_db.start_work_entry(session2.id, task.id)
+
+        task_db.end_work_entry(entry1.id, completed=True)
+
+        filtered_entries = task_db.get_all_work_entries(
+            session_id=session1.id,
+            task_id=task.id,
+            completed=True
+        )
+
+        assert len(filtered_entries) == 1
+        assert filtered_entries[0].id == entry1.id
+
+    def test_get_all_work_entries_ordered_by_started_desc(self, task_db):
+        '''Test work entries are ordered by started_at descending.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+
+        entry1 = task_db.start_work_entry(session.id, task.id)
+        entry2 = task_db.start_work_entry(session.id, task.id)
+        entry3 = task_db.start_work_entry(session.id, task.id)
+
+        entries = task_db.get_all_work_entries()
+
+        assert entries[0].id == entry3.id
+        assert entries[1].id == entry2.id
+        assert entries[2].id == entry1.id
+
+
+class TestWorkEntryEdgeCases:
+    '''Tests for edge cases and boundary conditions.'''
+
+    def test_pydantic_model_returned(self, task_db):
+        '''Test that all methods return Pydantic WorkEntry instances.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+
+        created = task_db.start_work_entry(session.id, task.id)
+        assert isinstance(created, WorkEntry)
+
+        retrieved = task_db.get_work_entry(created.id)
+        assert isinstance(retrieved, WorkEntry)
+
+        entries_list = task_db.get_all_work_entries()
+        assert all(isinstance(e, WorkEntry) for e in entries_list)
+
+        updated = task_db.update_work_entry(created.id, completed=True)
+        assert isinstance(updated, WorkEntry)
+
+        ended = task_db.end_work_entry(created.id, completed=True)
+        assert isinstance(ended, WorkEntry)
+
+    def test_work_entry_ended_at_after_started_at(self, task_db):
+        '''Test that ended_at is after started_at.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+        ended_entry = task_db.end_work_entry(work_entry.id)
+
+        assert ended_entry.ended_at > ended_entry.started_at
+
+    def test_multiple_work_entries_for_repeatable_task(self, task_db):
+        '''Test creating multiple work entries for a repeatable task.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Daily Task', 'maintain', repeatable=True)
+
+        entry1 = task_db.start_work_entry(session.id, task.id)
+        task_db.end_work_entry(entry1.id, completed=True)
+
+        entry2 = task_db.start_work_entry(session.id, task.id)
+        task_db.end_work_entry(entry2.id, completed=True)
+
+        entries = task_db.get_work_entries_by_task(task.id)
+
+        assert len(entries) == 2
+        assert all(e.completed for e in entries)

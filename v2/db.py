@@ -19,6 +19,8 @@ from v2.models import (
     TaskStateType,
     WeeklyGoal,
     WeeklyGoalModel,
+    WorkEntry,
+    WorkEntryModel,
 )
 from v2.util import get_week_start
 
@@ -818,3 +820,213 @@ class TaskDB:
                 SessionModel.started_at.desc()
             ).all()
             return [Session.model_validate(s) for s in session_models]
+
+    # Work Entry helper methods
+
+    def _get_work_entry_model(
+        self,
+        session: DBSession,
+        work_entry_id: int,
+    ) -> Optional[WorkEntryModel]:
+        '''Get a WorkEntryModel by ID.
+
+        Args:
+            session: Active SQLAlchemy session
+            work_entry_id: Work entry ID to retrieve
+
+        Returns:
+            WorkEntryModel if found, None otherwise
+        '''
+        return session.query(WorkEntryModel).filter(
+            WorkEntryModel.id == work_entry_id
+        ).first()
+
+    def _commit_and_convert_work_entry(
+        self,
+        session: DBSession,
+        model: WorkEntryModel,
+    ) -> WorkEntry:
+        '''Commit, refresh, and convert a WorkEntryModel to Pydantic.
+
+        Args:
+            session: Active SQLAlchemy session
+            model: WorkEntryModel instance
+
+        Returns:
+            WorkEntry Pydantic model
+        '''
+        session.commit()
+        session.refresh(model)
+        return WorkEntry.model_validate(model)
+
+    # Work Entry Operations
+
+    def start_work_entry(
+        self,
+        session_id: int,
+        task_id: int,
+    ) -> WorkEntry:
+        '''Start a new work entry for a task in a session.
+
+        Args:
+            session_id: ID of the session this work entry belongs to
+            task_id: ID of the task being worked on
+
+        Returns:
+            Created WorkEntry
+        '''
+        with self.SessionLocal() as session:
+            work_entry_model = WorkEntryModel(
+                session_id=session_id,
+                task_id=task_id,
+            )
+            session.add(work_entry_model)
+            return self._commit_and_convert_work_entry(session, work_entry_model)
+
+    def end_work_entry(
+        self,
+        work_entry_id: int,
+        completed: bool = False,
+        energy_after: Optional[int] = None,
+        want_more_like_this: Optional[bool] = None,
+        abandoned_reason: Optional[str] = None,
+    ) -> Optional[WorkEntry]:
+        '''End a work entry.
+
+        Sets ended_at to current time and optionally updates outcome fields.
+
+        Args:
+            work_entry_id: ID of the work entry to end
+            completed: Whether the task was completed (default: False)
+            energy_after: Energy level after work (1-5 scale, optional)
+            want_more_like_this: Whether user wants more tasks like this (optional)
+            abandoned_reason: Reason for abandonment if not completed (optional)
+
+        Returns:
+            Updated WorkEntry if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            if work_entry_model := self._get_work_entry_model(session, work_entry_id):
+                work_entry_model.ended_at = datetime.now(timezone.utc)
+                work_entry_model.completed = completed
+                if energy_after is not None:
+                    work_entry_model.energy_after = energy_after
+                if want_more_like_this is not None:
+                    work_entry_model.want_more_like_this = want_more_like_this
+                if abandoned_reason is not None:
+                    work_entry_model.abandoned_reason = abandoned_reason
+                return self._commit_and_convert_work_entry(session, work_entry_model)
+            return None
+
+    def get_work_entry(self, work_entry_id: int) -> Optional[WorkEntry]:
+        '''Get a specific work entry by ID.
+
+        Args:
+            work_entry_id: ID of the work entry to retrieve
+
+        Returns:
+            WorkEntry if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            work_entry_model = self._get_work_entry_model(session, work_entry_id)
+            return WorkEntry.model_validate(work_entry_model) if work_entry_model else None
+
+    def get_work_entries_by_session(
+        self,
+        session_id: int,
+    ) -> list[WorkEntry]:
+        '''Get all work entries for a specific session.
+
+        Args:
+            session_id: ID of the session to get work entries for
+
+        Returns:
+            List of WorkEntry objects ordered by started_at
+        '''
+        with self.SessionLocal() as session:
+            work_entry_models = session.query(WorkEntryModel).filter(
+                WorkEntryModel.session_id == session_id
+            ).order_by(WorkEntryModel.started_at).all()
+            return [WorkEntry.model_validate(we) for we in work_entry_models]
+
+    def get_work_entries_by_task(
+        self,
+        task_id: int,
+    ) -> list[WorkEntry]:
+        '''Get all work entries for a specific task.
+
+        Args:
+            task_id: ID of the task to get work entries for
+
+        Returns:
+            List of WorkEntry objects ordered by started_at descending
+        '''
+        with self.SessionLocal() as session:
+            work_entry_models = session.query(WorkEntryModel).filter(
+                WorkEntryModel.task_id == task_id
+            ).order_by(WorkEntryModel.started_at.desc()).all()
+            return [WorkEntry.model_validate(we) for we in work_entry_models]
+
+    def update_work_entry(
+        self,
+        work_entry_id: int,
+        completed: Optional[bool] = None,
+        energy_after: Optional[int] = None,
+        want_more_like_this: Optional[bool] = None,
+        abandoned_reason: Optional[str] = None,
+    ) -> Optional[WorkEntry]:
+        '''Update a work entry's fields.
+
+        Args:
+            work_entry_id: ID of the work entry to update
+            completed: New completed status (optional)
+            energy_after: New energy after level (optional)
+            want_more_like_this: New preference indicator (optional)
+            abandoned_reason: New abandoned reason (optional)
+
+        Returns:
+            Updated WorkEntry if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            if work_entry_model := self._get_work_entry_model(session, work_entry_id):
+                if completed is not None:
+                    work_entry_model.completed = completed
+                if energy_after is not None:
+                    work_entry_model.energy_after = energy_after
+                if want_more_like_this is not None:
+                    work_entry_model.want_more_like_this = want_more_like_this
+                if abandoned_reason is not None:
+                    work_entry_model.abandoned_reason = abandoned_reason
+                return self._commit_and_convert_work_entry(session, work_entry_model)
+            return None
+
+    def get_all_work_entries(
+        self,
+        session_id: Optional[int] = None,
+        task_id: Optional[int] = None,
+        completed: Optional[bool] = None,
+    ) -> list[WorkEntry]:
+        '''Get all work entries with optional filtering.
+
+        Args:
+            session_id: Filter by session ID (optional)
+            task_id: Filter by task ID (optional)
+            completed: Filter by completed status (optional)
+
+        Returns:
+            List of WorkEntry objects ordered by started_at descending
+        '''
+        with self.SessionLocal() as session:
+            query = session.query(WorkEntryModel)
+
+            if session_id is not None:
+                query = query.filter(WorkEntryModel.session_id == session_id)
+            if task_id is not None:
+                query = query.filter(WorkEntryModel.task_id == task_id)
+            if completed is not None:
+                query = query.filter(WorkEntryModel.completed == completed)
+
+            work_entry_models = query.order_by(
+                WorkEntryModel.started_at.desc()
+            ).all()
+            return [WorkEntry.model_validate(we) for we in work_entry_models]
