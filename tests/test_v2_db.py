@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, event
 import pytest
 
 from v2.db import TaskDB
-from v2.models import Base, Task, WeeklyGoal
+from v2.models import Base, Session, Task, WeeklyGoal
 from v2.util import get_week_start
 
 
@@ -1123,3 +1123,412 @@ class TestTaskEdgeCases:
 
         assert updated_task.title == 'Original'
         assert updated_task.est_minutes == 60
+
+
+# Session CRUD Tests
+
+
+class TestCreateSession:
+    '''Tests for create_session method.'''
+
+    def test_create_basic_session(self, task_db):
+        '''Test creating a basic session.'''
+        session = task_db.create_session()
+
+        assert session.id is not None
+        assert session.started_at is not None
+        assert session.ended_at is None
+        assert session.available_minutes is None
+        assert session.energy_level is None
+        assert session.focus_area is None
+        assert session.tasks_completed == 0
+        assert session.effectiveness is None
+
+    def test_create_session_with_all_fields(self, task_db):
+        '''Test creating a session with all optional fields.'''
+        session = task_db.create_session(
+            available_minutes=120,
+            energy_level=4,
+            focus_area='grow'
+        )
+
+        assert session.id is not None
+        assert session.available_minutes == 120
+        assert session.energy_level == 4
+        assert session.focus_area == 'grow'
+        assert session.tasks_completed == 0
+
+    def test_create_session_with_different_focus_areas(self, task_db):
+        '''Test creating sessions with different focus areas.'''
+        for focus_area in ['grow', 'maintain', 'sustain']:
+            session = task_db.create_session(focus_area=focus_area)
+            assert session.focus_area == focus_area
+
+    def test_create_session_with_different_energy_levels(self, task_db):
+        '''Test creating sessions with different energy levels.'''
+        for energy_level in [1, 2, 3, 4, 5]:
+            session = task_db.create_session(energy_level=energy_level)
+            assert session.energy_level == energy_level
+
+
+class TestGetSession:
+    '''Tests for get_session method.'''
+
+    def test_get_existing_session(self, task_db):
+        '''Test getting an existing session by ID.'''
+        created_session = task_db.create_session(
+            available_minutes=60,
+            energy_level=3
+        )
+
+        retrieved_session = task_db.get_session(created_session.id)
+
+        assert retrieved_session is not None
+        assert retrieved_session.id == created_session.id
+        assert retrieved_session.available_minutes == 60
+        assert retrieved_session.energy_level == 3
+
+    def test_get_nonexistent_session(self, task_db):
+        '''Test getting a session with non-existent ID returns None.'''
+        session = task_db.get_session(999)
+        assert session is None
+
+    def test_get_session_with_all_fields(self, task_db):
+        '''Test getting a session preserves all fields.'''
+        created_session = task_db.create_session(
+            available_minutes=90,
+            energy_level=5,
+            focus_area='maintain'
+        )
+
+        retrieved_session = task_db.get_session(created_session.id)
+
+        assert retrieved_session.available_minutes == 90
+        assert retrieved_session.energy_level == 5
+        assert retrieved_session.focus_area == 'maintain'
+
+
+class TestEndSession:
+    '''Tests for end_session method.'''
+
+    def test_end_session_basic(self, task_db):
+        '''Test ending a session sets ended_at.'''
+        session = task_db.create_session()
+
+        ended_session = task_db.end_session(session.id)
+
+        assert ended_session is not None
+        assert ended_session.ended_at is not None
+        assert ended_session.ended_at > session.started_at
+
+    def test_end_session_with_tasks_completed(self, task_db):
+        '''Test ending a session with tasks_completed.'''
+        session = task_db.create_session()
+
+        ended_session = task_db.end_session(session.id, tasks_completed=3)
+
+        assert ended_session.ended_at is not None
+        assert ended_session.tasks_completed == 3
+
+    def test_end_session_with_effectiveness(self, task_db):
+        '''Test ending a session with effectiveness rating.'''
+        session = task_db.create_session()
+
+        ended_session = task_db.end_session(session.id, effectiveness=4)
+
+        assert ended_session.effectiveness == 4
+
+    def test_end_session_with_all_fields(self, task_db):
+        '''Test ending a session with all optional fields.'''
+        session = task_db.create_session()
+
+        ended_session = task_db.end_session(
+            session.id,
+            tasks_completed=5,
+            effectiveness=5
+        )
+
+        assert ended_session.ended_at is not None
+        assert ended_session.tasks_completed == 5
+        assert ended_session.effectiveness == 5
+
+    def test_end_session_nonexistent(self, task_db):
+        '''Test ending a non-existent session returns None.'''
+        result = task_db.end_session(999)
+        assert result is None
+
+    def test_end_session_preserves_other_fields(self, task_db):
+        '''Test that ending a session doesn't change other fields.'''
+        session = task_db.create_session(
+            available_minutes=120,
+            energy_level=4,
+            focus_area='grow'
+        )
+
+        ended_session = task_db.end_session(session.id, tasks_completed=2)
+
+        assert ended_session.available_minutes == 120
+        assert ended_session.energy_level == 4
+        assert ended_session.focus_area == 'grow'
+
+
+class TestGetRecentSessions:
+    '''Tests for get_recent_sessions method.'''
+
+    def test_get_recent_sessions_empty(self, task_db):
+        '''Test getting recent sessions when none exist.'''
+        sessions = task_db.get_recent_sessions()
+        assert sessions == []
+
+    def test_get_recent_sessions(self, task_db):
+        '''Test getting recent sessions.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        session3 = task_db.create_session()
+
+        sessions = task_db.get_recent_sessions()
+
+        assert len(sessions) == 3
+        # Should be ordered by started_at descending (most recent first)
+        assert sessions[0].id == session3.id
+        assert sessions[1].id == session2.id
+        assert sessions[2].id == session1.id
+
+    def test_get_recent_sessions_with_limit(self, task_db):
+        '''Test getting recent sessions with limit.'''
+        task_db.create_session()
+        task_db.create_session()
+        session3 = task_db.create_session()
+
+        sessions = task_db.get_recent_sessions(limit=2)
+
+        assert len(sessions) == 2
+        assert sessions[0].id == session3.id
+
+    def test_get_recent_sessions_filter_by_focus_area(self, task_db):
+        '''Test filtering recent sessions by focus area.'''
+        grow_session = task_db.create_session(focus_area='grow')
+        task_db.create_session(focus_area='maintain')
+        task_db.create_session(focus_area='sustain')
+
+        grow_sessions = task_db.get_recent_sessions(focus_area='grow')
+
+        assert len(grow_sessions) == 1
+        assert grow_sessions[0].id == grow_session.id
+
+    def test_get_recent_sessions_default_limit(self, task_db):
+        '''Test that default limit is 10.'''
+        # Create 12 sessions
+        for _ in range(12):
+            task_db.create_session()
+
+        sessions = task_db.get_recent_sessions()
+
+        assert len(sessions) == 10
+
+
+class TestUpdateSession:
+    '''Tests for update_session method.'''
+
+    def test_update_session_available_minutes(self, task_db):
+        '''Test updating session available_minutes.'''
+        session = task_db.create_session(available_minutes=60)
+
+        updated_session = task_db.update_session(
+            session.id,
+            available_minutes=90
+        )
+
+        assert updated_session is not None
+        assert updated_session.available_minutes == 90
+
+    def test_update_session_energy_level(self, task_db):
+        '''Test updating session energy_level.'''
+        session = task_db.create_session(energy_level=3)
+
+        updated_session = task_db.update_session(session.id, energy_level=5)
+
+        assert updated_session.energy_level == 5
+
+    def test_update_session_focus_area(self, task_db):
+        '''Test updating session focus_area.'''
+        session = task_db.create_session(focus_area='grow')
+
+        updated_session = task_db.update_session(session.id, focus_area='maintain')
+
+        assert updated_session.focus_area == 'maintain'
+
+    def test_update_session_tasks_completed(self, task_db):
+        '''Test updating session tasks_completed.'''
+        session = task_db.create_session()
+
+        updated_session = task_db.update_session(session.id, tasks_completed=3)
+
+        assert updated_session.tasks_completed == 3
+
+    def test_update_session_effectiveness(self, task_db):
+        '''Test updating session effectiveness.'''
+        session = task_db.create_session()
+
+        updated_session = task_db.update_session(session.id, effectiveness=4)
+
+        assert updated_session.effectiveness == 4
+
+    def test_update_session_multiple_fields(self, task_db):
+        '''Test updating multiple session fields at once.'''
+        session = task_db.create_session()
+
+        updated_session = task_db.update_session(
+            session.id,
+            available_minutes=120,
+            energy_level=5,
+            focus_area='grow',
+            tasks_completed=4,
+            effectiveness=5
+        )
+
+        assert updated_session.available_minutes == 120
+        assert updated_session.energy_level == 5
+        assert updated_session.focus_area == 'grow'
+        assert updated_session.tasks_completed == 4
+        assert updated_session.effectiveness == 5
+
+    def test_update_session_with_none_values_ignores_fields(self, task_db):
+        '''Test that None values don't update fields.'''
+        session = task_db.create_session(
+            available_minutes=60,
+            energy_level=3
+        )
+
+        updated_session = task_db.update_session(
+            session.id,
+            available_minutes=None,
+            energy_level=None
+        )
+
+        assert updated_session.available_minutes == 60
+        assert updated_session.energy_level == 3
+
+    def test_update_session_nonexistent(self, task_db):
+        '''Test updating non-existent session returns None.'''
+        result = task_db.update_session(999, available_minutes=60)
+        assert result is None
+
+    def test_update_session_persists(self, task_db):
+        '''Test that updates are persisted in database.'''
+        session = task_db.create_session()
+
+        task_db.update_session(session.id, available_minutes=90)
+        retrieved_session = task_db.get_session(session.id)
+
+        assert retrieved_session.available_minutes == 90
+
+
+class TestGetAllSessions:
+    '''Tests for get_all_sessions method.'''
+
+    def test_get_all_sessions_empty(self, task_db):
+        '''Test getting all sessions when none exist.'''
+        sessions = task_db.get_all_sessions()
+        assert sessions == []
+
+    def test_get_all_sessions(self, task_db):
+        '''Test getting all sessions without filters.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+
+        sessions = task_db.get_all_sessions()
+
+        assert len(sessions) == 2
+        session_ids = [s.id for s in sessions]
+        assert session1.id in session_ids
+        assert session2.id in session_ids
+
+    def test_get_all_sessions_filter_by_focus_area(self, task_db):
+        '''Test filtering sessions by focus_area.'''
+        grow_session = task_db.create_session(focus_area='grow')
+        task_db.create_session(focus_area='maintain')
+
+        grow_sessions = task_db.get_all_sessions(focus_area='grow')
+
+        assert len(grow_sessions) == 1
+        assert grow_sessions[0].id == grow_session.id
+
+    def test_get_all_sessions_filter_by_min_effectiveness(self, task_db):
+        '''Test filtering sessions by minimum effectiveness.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        task_db.end_session(session1.id, effectiveness=3)
+        task_db.end_session(session2.id, effectiveness=5)
+
+        effective_sessions = task_db.get_all_sessions(min_effectiveness=4)
+
+        assert len(effective_sessions) == 1
+        assert effective_sessions[0].id == session2.id
+
+    def test_get_all_sessions_filter_by_focus_and_effectiveness(self, task_db):
+        '''Test filtering by both focus_area and min_effectiveness.'''
+        session1 = task_db.create_session(focus_area='grow')
+        session2 = task_db.create_session(focus_area='grow')
+        task_db.create_session(focus_area='maintain')
+
+        task_db.end_session(session1.id, effectiveness=3)
+        task_db.end_session(session2.id, effectiveness=5)
+
+        filtered_sessions = task_db.get_all_sessions(
+            focus_area='grow',
+            min_effectiveness=4
+        )
+
+        assert len(filtered_sessions) == 1
+        assert filtered_sessions[0].id == session2.id
+
+    def test_get_all_sessions_ordered_by_started_desc(self, task_db):
+        '''Test sessions are ordered by started_at descending.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+        session3 = task_db.create_session()
+
+        sessions = task_db.get_all_sessions()
+
+        assert sessions[0].id == session3.id
+        assert sessions[1].id == session2.id
+        assert sessions[2].id == session1.id
+
+
+class TestSessionEdgeCases:
+    '''Tests for edge cases and boundary conditions.'''
+
+    def test_pydantic_model_returned(self, task_db):
+        '''Test that all methods return Pydantic Session instances.'''
+        created = task_db.create_session()
+        assert isinstance(created, Session)
+
+        retrieved = task_db.get_session(created.id)
+        assert isinstance(retrieved, Session)
+
+        sessions_list = task_db.get_all_sessions()
+        assert all(isinstance(s, Session) for s in sessions_list)
+
+        updated = task_db.update_session(created.id, available_minutes=60)
+        assert isinstance(updated, Session)
+
+        ended = task_db.end_session(created.id)
+        assert isinstance(ended, Session)
+
+    def test_session_ended_at_after_started_at(self, task_db):
+        '''Test that ended_at is after started_at.'''
+        session = task_db.create_session()
+        ended_session = task_db.end_session(session.id)
+
+        assert ended_session.ended_at > ended_session.started_at
+
+    def test_multiple_sessions_different_timestamps(self, task_db):
+        '''Test multiple sessions have different timestamps.'''
+        session1 = task_db.create_session()
+        session2 = task_db.create_session()
+
+        # IDs should be different
+        assert session1.id != session2.id
+        # Timestamps should be close but session2 should be >= session1
+        assert session2.started_at >= session1.started_at

@@ -6,11 +6,14 @@ from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
 from sqlalchemy import Engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session as DBSession
+from sqlalchemy.orm import sessionmaker
 
 from v2.models import (
     CategoryType,
     GoalStatusType,
+    Session,
+    SessionModel,
     Task,
     TaskModel,
     TaskStateType,
@@ -36,7 +39,7 @@ class TaskDB:
 
     def _commit_and_convert(
         self,
-        session: Session,
+        session: DBSession,
         model: WeeklyGoalModel,
     ) -> WeeklyGoal:
         '''Commit, refresh, and convert a model to Pydantic.
@@ -54,7 +57,7 @@ class TaskDB:
 
     def _get_goal_model(
         self,
-        session: Session,
+        session: DBSession,
         goal_id: int,
     ) -> Optional[WeeklyGoalModel]:
         '''Get a WeeklyGoalModel by ID.
@@ -72,7 +75,7 @@ class TaskDB:
 
     def _get_task_model(
         self,
-        session: Session,
+        session: DBSession,
         task_id: int,
     ) -> Optional[TaskModel]:
         '''Get a TaskModel by ID.
@@ -90,7 +93,7 @@ class TaskDB:
 
     def _commit_and_convert_task(
         self,
-        session: Session,
+        session: DBSession,
         model: TaskModel,
     ) -> Task:
         '''Commit, refresh, and convert a TaskModel to Pydantic.
@@ -619,3 +622,199 @@ class TaskDB:
                 task_model.last_completed_at = None
                 return self._commit_and_convert_task(session, task_model)
             return None
+
+    # Session helper methods
+
+    def _get_session_model(
+        self,
+        session: DBSession,
+        session_id: int,
+    ) -> Optional[SessionModel]:
+        '''Get a SessionModel by ID.
+
+        Args:
+            session: Active SQLAlchemy session
+            session_id: Session ID to retrieve
+
+        Returns:
+            SessionModel if found, None otherwise
+        '''
+        return session.query(SessionModel).filter(
+            SessionModel.id == session_id
+        ).first()
+
+    def _commit_and_convert_session(
+        self,
+        session: DBSession,
+        model: SessionModel,
+    ) -> Session:
+        '''Commit, refresh, and convert a SessionModel to Pydantic.
+
+        Args:
+            session: Active SQLAlchemy session
+            model: SessionModel instance
+
+        Returns:
+            Session Pydantic model
+        '''
+        session.commit()
+        session.refresh(model)
+        return Session.model_validate(model)
+
+    # Session Operations
+
+    def create_session(
+        self,
+        available_minutes: Optional[int] = None,
+        energy_level: Optional[int] = None,
+        focus_area: Optional[str] = None,
+    ) -> Session:
+        '''Create a new work session.
+
+        Args:
+            available_minutes: Minutes available for this session (optional)
+            energy_level: Energy level at session start (1-5 scale, optional)
+            focus_area: Focus area category ('grow', 'maintain', or 'sustain', optional)
+
+        Returns:
+            Created Session
+        '''
+        with self.SessionLocal() as session:
+            session_model = SessionModel(
+                available_minutes=available_minutes,
+                energy_level=energy_level,
+                focus_area=focus_area,
+            )
+            session.add(session_model)
+            return self._commit_and_convert_session(session, session_model)
+
+    def get_session(self, session_id: int) -> Optional[Session]:
+        '''Get a specific session by ID.
+
+        Args:
+            session_id: ID of the session to retrieve
+
+        Returns:
+            Session if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            session_model = self._get_session_model(session, session_id)
+            return Session.model_validate(session_model) if session_model else None
+
+    def end_session(
+        self,
+        session_id: int,
+        tasks_completed: Optional[int] = None,
+        effectiveness: Optional[int] = None,
+    ) -> Optional[Session]:
+        '''End a work session.
+
+        Sets ended_at to current time and optionally updates tasks_completed
+        and effectiveness rating.
+
+        Args:
+            session_id: ID of the session to end
+            tasks_completed: Number of tasks completed (optional)
+            effectiveness: Effectiveness rating (1-5 scale, optional)
+
+        Returns:
+            Updated Session if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            if session_model := self._get_session_model(session, session_id):
+                session_model.ended_at = datetime.now(timezone.utc)
+                if tasks_completed is not None:
+                    session_model.tasks_completed = tasks_completed
+                if effectiveness is not None:
+                    session_model.effectiveness = effectiveness
+                return self._commit_and_convert_session(session, session_model)
+            return None
+
+    def get_recent_sessions(
+        self,
+        limit: int = 10,
+        focus_area: Optional[str] = None,
+    ) -> list[Session]:
+        '''Get recent sessions ordered by start time (most recent first).
+
+        Args:
+            limit: Maximum number of sessions to return (default: 10)
+            focus_area: Filter by focus area category (optional)
+
+        Returns:
+            List of Session objects
+        '''
+        with self.SessionLocal() as session:
+            query = session.query(SessionModel)
+
+            if focus_area is not None:
+                query = query.filter(SessionModel.focus_area == focus_area)
+
+            session_models = query.order_by(
+                SessionModel.started_at.desc()
+            ).limit(limit).all()
+            return [Session.model_validate(s) for s in session_models]
+
+    def update_session(
+        self,
+        session_id: int,
+        available_minutes: Optional[int] = None,
+        energy_level: Optional[int] = None,
+        focus_area: Optional[str] = None,
+        tasks_completed: Optional[int] = None,
+        effectiveness: Optional[int] = None,
+    ) -> Optional[Session]:
+        '''Update a session's fields.
+
+        Args:
+            session_id: ID of the session to update
+            available_minutes: New available minutes (optional)
+            energy_level: New energy level (optional)
+            focus_area: New focus area (optional)
+            tasks_completed: New tasks completed count (optional)
+            effectiveness: New effectiveness rating (optional)
+
+        Returns:
+            Updated Session if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            if session_model := self._get_session_model(session, session_id):
+                if available_minutes is not None:
+                    session_model.available_minutes = available_minutes
+                if energy_level is not None:
+                    session_model.energy_level = energy_level
+                if focus_area is not None:
+                    session_model.focus_area = focus_area
+                if tasks_completed is not None:
+                    session_model.tasks_completed = tasks_completed
+                if effectiveness is not None:
+                    session_model.effectiveness = effectiveness
+                return self._commit_and_convert_session(session, session_model)
+            return None
+
+    def get_all_sessions(
+        self,
+        focus_area: Optional[str] = None,
+        min_effectiveness: Optional[int] = None,
+    ) -> list[Session]:
+        '''Get all sessions with optional filtering.
+
+        Args:
+            focus_area: Filter by focus area category (optional)
+            min_effectiveness: Filter by minimum effectiveness rating (optional)
+
+        Returns:
+            List of Session objects ordered by started_at descending
+        '''
+        with self.SessionLocal() as session:
+            query = session.query(SessionModel)
+
+            if focus_area is not None:
+                query = query.filter(SessionModel.focus_area == focus_area)
+            if min_effectiveness is not None:
+                query = query.filter(SessionModel.effectiveness >= min_effectiveness)
+
+            session_models = query.order_by(
+                SessionModel.started_at.desc()
+            ).all()
+            return [Session.model_validate(s) for s in session_models]
