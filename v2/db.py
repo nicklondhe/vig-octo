@@ -432,7 +432,7 @@ class TaskDB:
                 if state is not None:
                     task_model.state = state
                     # Auto-set timestamps when marking as done
-                    if state == 'done' and task_model.completed_at is None:
+                    if state == 'done':
                         task_model.completed_at = datetime.now(timezone.utc)
                         # For repeatable tasks, also update last_completed_at
                         if task_model.repeatable:
@@ -519,14 +519,15 @@ class TaskDB:
         self,
         task_id: int,
         actual_minutes: Optional[int] = None,
-        energy_after: Optional[float] = None,
+        energy_after: float = 3.0,
     ) -> Optional[Task]:
         '''Update learning-related fields for a task.
 
         Args:
             task_id: ID of the task to update
             actual_minutes: Actual minutes spent (optional)
-            energy_after: Energy level after task (1-5 scale, optional)
+            energy_after: Energy level after task (1-5 scale, defaults to 3.0)
+                Business layer should track current energy and provide actual value.
 
         Returns:
             Updated Task if found, None otherwise
@@ -536,15 +537,17 @@ class TaskDB:
                 if actual_minutes is not None:
                     task_model.actual_minutes = actual_minutes
 
-                if energy_after is not None:
-                    # Update running average of energy_after
-                    if task_model.avg_energy_after is None:
-                        task_model.avg_energy_after = energy_after
-                    else:
-                        # Calculate new average based on times_accepted
-                        count = task_model.times_accepted or 1
-                        current_total = task_model.avg_energy_after * count
-                        task_model.avg_energy_after = (current_total + energy_after) / (count + 1)
+                # Update running average of energy_after
+                # Note: This uses times_accepted as the count.
+                # Business layer should ensure update_task_learning is called
+                # when incrementing times_accepted to maintain 1:1 relationship.
+                if task_model.avg_energy_after is None:
+                    task_model.avg_energy_after = energy_after
+                else:
+                    # Calculate new average based on times_accepted
+                    count = task_model.times_accepted or 1
+                    current_total = task_model.avg_energy_after * count
+                    task_model.avg_energy_after = (current_total + energy_after) / (count + 1)
 
                 return self._commit_and_convert_task(session, task_model)
             return None
@@ -565,7 +568,7 @@ class TaskDB:
         '''
         with self.SessionLocal() as session:
             query = session.query(TaskModel).filter(
-                TaskModel.repeatable == True,
+                TaskModel.repeatable.is_(True),
                 TaskModel.last_completed_at.isnot(None)
             )
 
@@ -598,7 +601,6 @@ class TaskDB:
                     task_model.completed_at = None
                     # Keep last_completed_at for repeatables
                     # Keep learning stats (times_suggested, etc.)
-                    session.add(task_model)
                     reset_tasks.append(task_model)
 
             if reset_tasks:
