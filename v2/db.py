@@ -360,6 +360,8 @@ class TaskDB:
         category: Optional[CategoryType] = None,
         goal_id: Optional[int] = None,
         repeatable: Optional[bool] = None,
+        limit: Optional[int] = None,
+        order_desc: bool = True,
     ) -> list[Task]:
         '''Get all tasks with optional filtering.
 
@@ -368,6 +370,8 @@ class TaskDB:
             category: Filter by category (optional)
             goal_id: Filter by goal ID (optional)
             repeatable: Filter by repeatable flag (optional)
+            limit: Maximum number of tasks to return (optional)
+            order_desc: Order by created_at descending (default: True)
 
         Returns:
             List of Task objects matching the filters
@@ -384,7 +388,17 @@ class TaskDB:
             if repeatable is not None:
                 query = query.filter(TaskModel.repeatable == repeatable)
 
-            task_models = query.order_by(TaskModel.created_at).all()
+            # Apply ordering
+            if order_desc:
+                query = query.order_by(TaskModel.created_at.desc())
+            else:
+                query = query.order_by(TaskModel.created_at)
+
+            # Apply limit at SQL level
+            if limit is not None and limit > 0:
+                query = query.limit(limit)
+
+            task_models = query.all()
             return [Task.model_validate(t) for t in task_models]
 
     def count_tasks(

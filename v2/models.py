@@ -374,6 +374,13 @@ class TaskResponse(BaseModel):
     task_id: Optional[int] = None
 
 
+class TaskListResponse(BaseModel):
+    '''Response for listing tasks'''
+    success: bool
+    message: str
+    tasks: list[Task]
+
+
 class SessionResponse(BaseModel):
     '''Generic response for session operations'''
     success: bool

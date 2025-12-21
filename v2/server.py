@@ -13,7 +13,15 @@ from sqlalchemy import create_engine
 
 from v2.config import get_version, get_config
 from v2.db import TaskDB
-from v2.models import Base, TaskCreate, TaskResponse, HealthCheckResponse
+from v2.models import (
+    Base,
+    TaskCreate,
+    TaskResponse,
+    TaskListResponse,
+    HealthCheckResponse,
+    TaskStateType,
+    CategoryType,
+)
 
 # Get configuration
 config = get_config()
@@ -108,4 +116,52 @@ def add_task(task_data: TaskCreate) -> TaskResponse:
             success=False,
             message=f"Failed to create task: {str(e)}",
             task_id=None
+        )
+
+
+@mcp.tool()
+def list_tasks(
+    state: TaskStateType | None = None,
+    category: CategoryType | None = None,
+    goal_id: int | None = None,
+    limit: int | None = None
+) -> TaskListResponse:
+    '''List tasks with optional filtering.
+
+    Args:
+        state: Filter by task state ('ready', 'active', 'done', 'archived') - optional
+        category: Filter by category ('grow', 'maintain', 'sustain') - optional
+        goal_id: Filter by goal ID - optional
+        limit: Maximum number of tasks to return (must be > 0) - optional
+
+    Returns:
+        TaskListResponse with filtered tasks (ordered by created_at desc)
+    '''
+    try:
+        # Validate limit
+        if limit is not None and limit <= 0:
+            return TaskListResponse(
+                success=False,
+                message="limit must be greater than 0",
+                tasks=[]
+            )
+
+        # Get filtered tasks (with limit applied at SQL level)
+        tasks = task_db.get_all_tasks(
+            state=state,
+            category=category,
+            goal_id=goal_id,
+            limit=limit
+        )
+
+        return TaskListResponse(
+            success=True,
+            message=f"Found {len(tasks)} tasks",
+            tasks=tasks
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return TaskListResponse(
+            success=False,
+            message=f"Failed to list tasks: {str(e)}",
+            tasks=[]
         )
