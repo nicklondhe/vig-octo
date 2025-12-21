@@ -9,7 +9,8 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from typing import Literal
 from sqlalchemy import create_engine
 
 from v2.config import get_version, get_config
@@ -39,6 +40,24 @@ class HealthCheckResponse(BaseModel):
     total_tasks: int
     active_sessions: int
     timestamp: datetime
+
+
+# Request model for adding a task
+class AddTaskRequest(BaseModel):
+    '''Model for task creation request'''
+    title: str
+    category: Literal['grow', 'maintain', 'sustain']
+    est_minutes: int | None = Field(default=None, gt=0)
+    repeatable: bool = False
+    goal_id: int | None = None
+
+
+# Response model for task operations
+class TaskResponse(BaseModel):
+    '''Model for task operation response'''
+    success: bool
+    message: str
+    task_id: int | None = None
 
 
 @mcp.tool()
@@ -74,4 +93,56 @@ def health_check() -> HealthCheckResponse:
             total_tasks=0,
             active_sessions=0,
             timestamp=datetime.now(timezone.utc)
+        )
+
+
+@mcp.tool()
+def add_task(task_data: AddTaskRequest) -> TaskResponse:
+    '''Add a new task to the system.
+
+    Args:
+        task_data: Task creation data including title, category, est_minutes, repeatable, goal_id
+
+    Returns:
+        TaskResponse with success status, message, and task_id
+
+    Note:
+        - category must be 'grow', 'maintain', or 'sustain' (validated by Pydantic)
+        - est_minutes must be > 0 if provided (validated by Pydantic)
+        - goal_id will be validated against database if provided
+    '''
+    try:
+        # Only validate goal_id against database (Pydantic handles the rest)
+        if task_data.goal_id is not None:
+            goal = task_db.get_weekly_goal(task_data.goal_id)
+            if goal is None:
+                return TaskResponse(
+                    success=False,
+                    message=f"Goal with ID {task_data.goal_id} not found",
+                    task_id=None
+                )
+
+        # Create the task
+        task = task_db.create_task(
+            title=task_data.title,
+            category=task_data.category,
+            est_minutes=task_data.est_minutes,
+            repeatable=task_data.repeatable,
+            goal_id=task_data.goal_id
+        )
+
+        message = f"Task '{task_data.title}' created successfully"
+        if task_data.goal_id is not None:
+            message += f" and linked to goal {task_data.goal_id}"
+
+        return TaskResponse(
+            success=True,
+            message=message,
+            task_id=task.id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return TaskResponse(
+            success=False,
+            message=f"Failed to create task: {str(e)}",
+            task_id=None
         )
