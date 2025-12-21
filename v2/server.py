@@ -19,6 +19,8 @@ from v2.models import (
     TaskResponse,
     TaskListResponse,
     HealthCheckResponse,
+    SessionResponse,
+    WorkEntryResponse,
     TaskStateType,
     CategoryType,
 )
@@ -164,4 +166,107 @@ def list_tasks(
             success=False,
             message=f"Failed to list tasks: {str(e)}",
             tasks=[]
+        )
+
+
+@mcp.tool()
+def start_session(
+    available_minutes: int | None = None,
+    energy_level: int | None = None,
+    focus_area: CategoryType | None = None
+) -> SessionResponse:
+    '''Start a new work session.
+
+    Args:
+        available_minutes: Minutes available for this session (optional)
+        energy_level: Current energy level 1-5 (optional)
+        focus_area: Focus area ('grow', 'maintain', 'sustain') - optional
+
+    Returns:
+        SessionResponse with session_id
+    '''
+    try:
+        # Validate energy_level range
+        if energy_level is not None and (energy_level < 1 or energy_level > 5):
+            return SessionResponse(
+                success=False,
+                message="energy_level must be between 1 and 5",
+                session_id=None
+            )
+
+        # Validate available_minutes
+        if available_minutes is not None and available_minutes <= 0:
+            return SessionResponse(
+                success=False,
+                message="available_minutes must be greater than 0",
+                session_id=None
+            )
+
+        session = task_db.create_session(
+            available_minutes=available_minutes,
+            energy_level=energy_level,
+            focus_area=focus_area
+        )
+
+        return SessionResponse(
+            success=True,
+            message=f"Session {session.id} started",
+            session_id=session.id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return SessionResponse(
+            success=False,
+            message=f"Failed to start session: {str(e)}",
+            session_id=None
+        )
+
+
+@mcp.tool()
+def start_work(session_id: int, task_id: int) -> WorkEntryResponse:
+    '''Start work on a task within a session.
+
+    Increments times_accepted and creates a work entry.
+
+    Args:
+        session_id: ID of the active session
+        task_id: ID of the task to work on
+
+    Returns:
+        WorkEntryResponse with work_entry_id
+    '''
+    try:
+        # Validate session exists
+        session = task_db.get_session(session_id)
+        if session is None:
+            return WorkEntryResponse(
+                success=False,
+                message=f"Session {session_id} not found",
+                work_entry_id=None
+            )
+
+        # Validate task exists
+        task = task_db.get_task(task_id)
+        if task is None:
+            return WorkEntryResponse(
+                success=False,
+                message=f"Task {task_id} not found",
+                work_entry_id=None
+            )
+
+        # Increment accepted stat (suggested happens in rec system)
+        task_db.increment_task_stat(task_id, 'accepted')
+
+        # Start work entry
+        work_entry = task_db.start_work_entry(session_id, task_id)
+
+        return WorkEntryResponse(
+            success=True,
+            message=f"Started work on task '{task.title}'",
+            work_entry_id=work_entry.id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return WorkEntryResponse(
+            success=False,
+            message=f"Failed to start work: {str(e)}",
+            work_entry_id=None
         )
