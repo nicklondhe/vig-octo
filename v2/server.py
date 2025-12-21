@@ -9,13 +9,12 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel, Field
-from typing import Literal
+from pydantic import BaseModel
 from sqlalchemy import create_engine
 
 from v2.config import get_version, get_config
 from v2.db import TaskDB
-from v2.models import Base, SessionModel, TaskModel
+from v2.models import Base, TaskCreate, TaskResponse, HealthCheckResponse
 
 # Get configuration
 config = get_config()
@@ -31,35 +30,6 @@ Base.metadata.bind = engine
 task_db = TaskDB(engine)
 
 
-# Response model for health check
-class HealthCheckResponse(BaseModel):
-    '''Health check response model'''
-    success: bool
-    message: str
-    database_connected: bool
-    total_tasks: int
-    active_sessions: int
-    timestamp: datetime
-
-
-# Request model for adding a task
-class AddTaskRequest(BaseModel):
-    '''Model for task creation request'''
-    title: str
-    category: Literal['grow', 'maintain', 'sustain']
-    est_minutes: int | None = Field(default=None, gt=0)
-    repeatable: bool = False
-    goal_id: int | None = None
-
-
-# Response model for task operations
-class TaskResponse(BaseModel):
-    '''Model for task operation response'''
-    success: bool
-    message: str
-    task_id: int | None = None
-
-
 @mcp.tool()
 def health_check() -> HealthCheckResponse:
     '''Check database connection and return basic stats.
@@ -67,15 +37,13 @@ def health_check() -> HealthCheckResponse:
     Returns connection status, total task count, and number of active sessions.
     '''
     try:
-        # Test database connection by counting tasks
-        with task_db.SessionLocal() as session:
-            # Count total tasks
-            total_tasks = session.query(TaskModel).count()
+        # Test database connection using TaskDB methods
+        all_tasks = task_db.get_all_tasks()
+        total_tasks = len(all_tasks)
 
-            # Count active sessions (started but not ended)
-            active_sessions = session.query(SessionModel).filter(
-                SessionModel.ended_at.is_(None)
-            ).count()
+        # Count active sessions (filtered at SQL level for efficiency)
+        active_sessions_list = task_db.get_active_sessions()
+        active_sessions = len(active_sessions_list)
 
         return HealthCheckResponse(
             success=True,
@@ -97,7 +65,7 @@ def health_check() -> HealthCheckResponse:
 
 
 @mcp.tool()
-def add_task(task_data: AddTaskRequest) -> TaskResponse:
+def add_task(task_data: TaskCreate) -> TaskResponse:
     '''Add a new task to the system.
 
     Args:

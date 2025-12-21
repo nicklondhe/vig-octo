@@ -823,6 +823,18 @@ class TaskDB:
             ).all()
             return [Session.model_validate(s) for s in session_models]
 
+    def get_active_sessions(self) -> list[Session]:
+        '''Get all active sessions (not ended).
+
+        Returns:
+            List of active Session objects ordered by started_at descending
+        '''
+        with self.SessionLocal() as session:
+            session_models = session.query(SessionModel).filter(
+                SessionModel.ended_at.is_(None)
+            ).order_by(SessionModel.started_at.desc()).all()
+            return [Session.model_validate(s) for s in session_models]
+
     # Work Entry helper methods
 
     def _get_work_entry_model(

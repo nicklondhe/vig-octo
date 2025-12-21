@@ -238,8 +238,34 @@ class WeeklyGoal(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+# Base model for shared task fields
+class TaskBase(BaseModel):
+    '''Base model with shared task fields for creation/updates'''
+    title: str = Field(..., min_length=1, max_length=500)
+    category: CategoryType
+    est_minutes: Optional[int] = Field(None, gt=0, le=1440)
+    repeatable: bool = False
+    goal_id: Optional[int] = None
+
+
+class TaskCreate(TaskBase):
+    '''Request model for creating tasks (used by MCP server)'''
+    pass  # Inherits all validation from TaskBase
+
+
+class TaskUpdate(BaseModel):
+    '''Request model for updating tasks (all fields optional, used by MCP server)'''
+    title: Optional[str] = Field(None, min_length=1, max_length=500)
+    category: Optional[CategoryType] = None
+    est_minutes: Optional[int] = Field(None, gt=0, le=1440)
+    actual_minutes: Optional[int] = Field(None, gt=0)
+    state: Optional[TaskStateType] = None
+    repeatable: Optional[bool] = None
+    goal_id: Optional[int] = None
+
+
 class Task(BaseModel):
-    '''Pydantic model for tasks.'''
+    '''Full Pydantic model for tasks (includes DB-generated fields)'''
 
     id: Optional[int] = None
     title: str = Field(..., min_length=1, max_length=500)
@@ -328,6 +354,48 @@ class WorkEntry(BaseModel):
 
 
 # Database utilities
+
+# API Response Models (generic, reusable across different interfaces)
+
+class HealthCheckResponse(BaseModel):
+    '''Response for health check operations'''
+    success: bool
+    message: str
+    database_connected: bool
+    total_tasks: int
+    active_sessions: int
+    timestamp: datetime
+
+
+class TaskResponse(BaseModel):
+    '''Generic response for task operations'''
+    success: bool
+    message: str
+    task_id: Optional[int] = None
+
+
+class SessionResponse(BaseModel):
+    '''Generic response for session operations'''
+    success: bool
+    message: str
+    session_id: Optional[int] = None
+
+
+class WorkEntryResponse(BaseModel):
+    '''Generic response for work entry operations'''
+    success: bool
+    message: str
+    work_entry_id: Optional[int] = None
+
+
+class WeeklyGoalResponse(BaseModel):
+    '''Generic response for weekly goal operations'''
+    success: bool
+    message: str
+    goal_id: Optional[int] = None
+
+
+# Database helper functions
 
 def create_tables(engine) -> None:
     '''Create all tables in the database.
