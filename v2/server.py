@@ -13,7 +13,15 @@ from sqlalchemy import create_engine
 
 from v2.config import get_version, get_config
 from v2.db import TaskDB
-from v2.models import Base, TaskCreate, TaskResponse, TaskListResponse, HealthCheckResponse
+from v2.models import (
+    Base,
+    TaskCreate,
+    TaskResponse,
+    TaskListResponse,
+    HealthCheckResponse,
+    TaskStateType,
+    CategoryType,
+)
 
 # Get configuration
 config = get_config()
@@ -113,8 +121,8 @@ def add_task(task_data: TaskCreate) -> TaskResponse:
 
 @mcp.tool()
 def list_tasks(
-    state: str | None = None,
-    category: str | None = None,
+    state: TaskStateType | None = None,
+    category: CategoryType | None = None,
     goal_id: int | None = None,
     limit: int | None = None
 ) -> TaskListResponse:
@@ -124,12 +132,20 @@ def list_tasks(
         state: Filter by task state ('ready', 'active', 'done', 'archived') - optional
         category: Filter by category ('grow', 'maintain', 'sustain') - optional
         goal_id: Filter by goal ID - optional
-        limit: Maximum number of tasks to return - optional
+        limit: Maximum number of tasks to return (must be > 0) - optional
 
     Returns:
         TaskListResponse with filtered tasks (ordered by created_at desc)
     '''
     try:
+        # Validate limit
+        if limit is not None and limit <= 0:
+            return TaskListResponse(
+                success=False,
+                message="limit must be greater than 0",
+                tasks=[]
+            )
+
         # Get filtered tasks (with limit applied at SQL level)
         tasks = task_db.get_all_tasks(
             state=state,
