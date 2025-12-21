@@ -9,7 +9,6 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel
 from sqlalchemy import create_engine
 
 from v2.config import get_version, get_config
@@ -37,13 +36,9 @@ def health_check() -> HealthCheckResponse:
     Returns connection status, total task count, and number of active sessions.
     '''
     try:
-        # Test database connection using TaskDB methods
-        all_tasks = task_db.get_all_tasks()
-        total_tasks = len(all_tasks)
-
-        # Count active sessions (filtered at SQL level for efficiency)
-        active_sessions_list = task_db.get_active_sessions()
-        active_sessions = len(active_sessions_list)
+        # Test database connection using TaskDB count methods (SQL-level)
+        total_tasks = task_db.count_tasks()
+        active_sessions = task_db.count_active_sessions()
 
         return HealthCheckResponse(
             success=True,

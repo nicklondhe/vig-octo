@@ -387,6 +387,38 @@ class TaskDB:
             task_models = query.order_by(TaskModel.created_at).all()
             return [Task.model_validate(t) for t in task_models]
 
+    def count_tasks(
+        self,
+        state: Optional[TaskStateType] = None,
+        category: Optional[CategoryType] = None,
+        goal_id: Optional[int] = None,
+        repeatable: Optional[bool] = None,
+    ) -> int:
+        '''Count tasks with optional filtering (SQL-level count).
+
+        Args:
+            state: Filter by state (optional)
+            category: Filter by category (optional)
+            goal_id: Filter by goal ID (optional)
+            repeatable: Filter by repeatable flag (optional)
+
+        Returns:
+            Count of tasks matching the filters
+        '''
+        with self.SessionLocal() as session:
+            query = session.query(TaskModel)
+
+            if state is not None:
+                query = query.filter(TaskModel.state == state)
+            if category is not None:
+                query = query.filter(TaskModel.category == category)
+            if goal_id is not None:
+                query = query.filter(TaskModel.goal_id == goal_id)
+            if repeatable is not None:
+                query = query.filter(TaskModel.repeatable == repeatable)
+
+            return query.count()
+
     def update_task(
         self,
         task_id: int,
@@ -834,6 +866,17 @@ class TaskDB:
                 SessionModel.ended_at.is_(None)
             ).order_by(SessionModel.started_at.desc()).all()
             return [Session.model_validate(s) for s in session_models]
+
+    def count_active_sessions(self) -> int:
+        '''Count active sessions (not ended) - SQL-level count.
+
+        Returns:
+            Count of active sessions
+        '''
+        with self.SessionLocal() as session:
+            return session.query(SessionModel).filter(
+                SessionModel.ended_at.is_(None)
+            ).count()
 
     # Work Entry helper methods
 
