@@ -9,12 +9,11 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import BaseModel
 from sqlalchemy import create_engine
 
 from v2.config import get_version, get_config
 from v2.db import TaskDB
-from v2.models import Base, SessionModel, TaskModel
+from v2.models import Base, TaskCreate, TaskResponse, HealthCheckResponse
 
 # Get configuration
 config = get_config()
@@ -30,17 +29,6 @@ Base.metadata.bind = engine
 task_db = TaskDB(engine)
 
 
-# Response model for health check
-class HealthCheckResponse(BaseModel):
-    '''Health check response model'''
-    success: bool
-    message: str
-    database_connected: bool
-    total_tasks: int
-    active_sessions: int
-    timestamp: datetime
-
-
 @mcp.tool()
 def health_check() -> HealthCheckResponse:
     '''Check database connection and return basic stats.
@@ -48,15 +36,9 @@ def health_check() -> HealthCheckResponse:
     Returns connection status, total task count, and number of active sessions.
     '''
     try:
-        # Test database connection by counting tasks
-        with task_db.SessionLocal() as session:
-            # Count total tasks
-            total_tasks = session.query(TaskModel).count()
-
-            # Count active sessions (started but not ended)
-            active_sessions = session.query(SessionModel).filter(
-                SessionModel.ended_at.is_(None)
-            ).count()
+        # Test database connection using TaskDB count methods (SQL-level)
+        total_tasks = task_db.count_tasks()
+        active_sessions = task_db.count_active_sessions()
 
         return HealthCheckResponse(
             success=True,
@@ -74,4 +56,56 @@ def health_check() -> HealthCheckResponse:
             total_tasks=0,
             active_sessions=0,
             timestamp=datetime.now(timezone.utc)
+        )
+
+
+@mcp.tool()
+def add_task(task_data: TaskCreate) -> TaskResponse:
+    '''Add a new task to the system.
+
+    Args:
+        task_data: Task creation data including title, category, est_minutes, repeatable, goal_id
+
+    Returns:
+        TaskResponse with success status, message, and task_id
+
+    Note:
+        - category must be 'grow', 'maintain', or 'sustain' (validated by Pydantic)
+        - est_minutes must be > 0 if provided (validated by Pydantic)
+        - goal_id will be validated against database if provided
+    '''
+    try:
+        # Only validate goal_id against database (Pydantic handles the rest)
+        if task_data.goal_id is not None:
+            goal = task_db.get_weekly_goal(task_data.goal_id)
+            if goal is None:
+                return TaskResponse(
+                    success=False,
+                    message=f"Goal with ID {task_data.goal_id} not found",
+                    task_id=None
+                )
+
+        # Create the task
+        task = task_db.create_task(
+            title=task_data.title,
+            category=task_data.category,
+            est_minutes=task_data.est_minutes,
+            repeatable=task_data.repeatable,
+            goal_id=task_data.goal_id
+        )
+
+        message = f"Task '{task_data.title}' created successfully"
+        if task_data.goal_id is not None:
+            message += f" and linked to goal {task_data.goal_id}"
+
+        return TaskResponse(
+            success=True,
+            message=message,
+            task_id=task.id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return TaskResponse(
+            success=False,
+            message=f"Failed to create task: {str(e)}",
+            task_id=None
         )
