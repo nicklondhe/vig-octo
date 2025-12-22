@@ -186,22 +186,6 @@ def start_session(
         SessionResponse with session_id
     '''
     try:
-        # Validate energy_level range
-        if energy_level is not None and (energy_level < 1 or energy_level > 5):
-            return SessionResponse(
-                success=False,
-                message="energy_level must be between 1 and 5",
-                session_id=None
-            )
-
-        # Validate available_minutes
-        if available_minutes is not None and available_minutes <= 0:
-            return SessionResponse(
-                success=False,
-                message="available_minutes must be greater than 0",
-                session_id=None
-            )
-
         session = task_db.create_session(
             available_minutes=available_minutes,
             energy_level=energy_level,
@@ -269,4 +253,103 @@ def start_work(session_id: int, task_id: int) -> WorkEntryResponse:
             success=False,
             message=f"Failed to start work: {str(e)}",
             work_entry_id=None
+        )
+
+
+@mcp.tool()
+def complete_work(
+    work_id: int,
+    completed: bool = False,
+    energy_after: int | None = None,
+    want_more_like_this: bool | None = None,
+    abandoned_reason: str | None = None
+) -> WorkEntryResponse:
+    '''Complete work on a task.
+
+    Atomically ends the work entry, updates task state (if completed and not repeatable),
+    calculates actual minutes, and updates learning data.
+
+    Args:
+        work_id: ID of the work entry to complete
+        completed: Whether the task was completed (default: False)
+        energy_after: Energy level after work 1-5 (optional)
+        want_more_like_this: Whether user wants more tasks like this (optional)
+        abandoned_reason: Reason if not completed (optional)
+
+    Returns:
+        WorkEntryResponse with success status
+    '''
+    try:
+        completed_entry = task_db.complete_work_entry(
+            work_entry_id=work_id,
+            completed=completed,
+            energy_after=energy_after,
+            want_more_like_this=want_more_like_this,
+            abandoned_reason=abandoned_reason
+        )
+
+        if completed_entry is None:
+            return WorkEntryResponse(
+                success=False,
+                message=f"Work entry {work_id} not found",
+                work_entry_id=None
+            )
+
+        # Get task for success message
+        task = task_db.get_task(completed_entry.task_id)
+        task_title = task.title if task else "unknown"
+
+        return WorkEntryResponse(
+            success=True,
+            message=f"Work completed on task '{task_title}'",
+            work_entry_id=work_id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return WorkEntryResponse(
+            success=False,
+            message=f"Failed to complete work: {str(e)}",
+            work_entry_id=None
+        )
+
+
+@mcp.tool()
+def end_session(
+    session_id: int,
+    tasks_completed: int | None = None,
+    effectiveness: int | None = None
+) -> SessionResponse:
+    '''End a work session.
+
+    Args:
+        session_id: ID of the session to end
+        tasks_completed: Number of tasks completed in session (optional)
+        effectiveness: Self-rated effectiveness 1-5 (optional)
+
+    Returns:
+        SessionResponse with success status
+    '''
+    try:
+        session = task_db.end_session(
+            session_id=session_id,
+            tasks_completed=tasks_completed,
+            effectiveness=effectiveness
+        )
+
+        if session is None:
+            return SessionResponse(
+                success=False,
+                message=f"Session {session_id} not found",
+                session_id=None
+            )
+
+        return SessionResponse(
+            success=True,
+            message=f"Session {session_id} ended",
+            session_id=session_id
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return SessionResponse(
+            success=False,
+            message=f"Failed to end session: {str(e)}",
+            session_id=None
         )
