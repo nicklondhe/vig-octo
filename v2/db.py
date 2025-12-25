@@ -989,6 +989,83 @@ class TaskDB:
                 return self._commit_and_convert_work_entry(session, work_entry_model)
             return None
 
+    def complete_work_entry(
+        self,
+        work_entry_id: int,
+        completed: bool = False,
+        energy_after: Optional[int] = None,
+        want_more_like_this: Optional[bool] = None,
+        abandoned_reason: Optional[str] = None,
+    ) -> Optional[WorkEntry]:
+        '''Complete a work entry and update related task data atomically.
+
+        Ends the work entry, calculates actual minutes, updates task state
+        (if completed and not repeatable), and updates task learning data.
+        All operations are performed in a single transaction.
+
+        Args:
+            work_entry_id: ID of the work entry to complete
+            completed: Whether the task was completed (default: False)
+            energy_after: Energy level after work (1-5 scale, optional)
+            want_more_like_this: Whether user wants more tasks like this (optional)
+            abandoned_reason: Reason for abandonment if not completed (optional)
+
+        Returns:
+            Completed WorkEntry if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            # Get work entry
+            work_entry_model = self._get_work_entry_model(session, work_entry_id)
+            if not work_entry_model:
+                return None
+
+            # Get task (fail early if not found)
+            task_model = self._get_task_model(session, work_entry_model.task_id)
+            if not task_model:
+                return None
+
+            # End the work entry
+            work_entry_model.ended_at = datetime.now(timezone.utc)
+            work_entry_model.completed = completed
+            if energy_after is not None:
+                work_entry_model.energy_after = energy_after
+            if want_more_like_this is not None:
+                work_entry_model.want_more_like_this = want_more_like_this
+            if abandoned_reason is not None:
+                work_entry_model.abandoned_reason = abandoned_reason
+
+            # Calculate actual_minutes
+            actual_minutes = None
+            if work_entry_model.started_at and work_entry_model.ended_at:
+                duration = work_entry_model.ended_at - work_entry_model.started_at
+                actual_minutes = int(duration.total_seconds() / 60)
+
+            # Update task state if completed and not repeatable
+            if completed and not task_model.repeatable:
+                task_model.state = 'done'
+                task_model.completed_at = datetime.now(timezone.utc)
+
+            # Update task learning data
+            # Note: avg_energy_after uses times_accepted as the count.
+            # Business layer should increment times_accepted via increment_task_stat
+            # when starting work to maintain 1:1 relationship.
+            if actual_minutes is not None:
+                task_model.actual_minutes = actual_minutes
+
+            if energy_after is not None:
+                if task_model.avg_energy_after is None:
+                    task_model.avg_energy_after = float(energy_after)
+                else:
+                    count = task_model.times_accepted or 1
+                    current_total = task_model.avg_energy_after * (count - 1)
+                    new_total = current_total + energy_after
+                    task_model.avg_energy_after = new_total / count
+
+            # Commit all changes in single transaction
+            session.commit()
+            session.refresh(work_entry_model)
+            return WorkEntry.model_validate(work_entry_model)
+
     def get_work_entry(self, work_entry_id: int) -> Optional[WorkEntry]:
         '''Get a specific work entry by ID.
 
