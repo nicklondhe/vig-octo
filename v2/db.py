@@ -1037,8 +1037,19 @@ class TaskDB:
             # Calculate actual_minutes
             actual_minutes = None
             if work_entry_model.started_at and work_entry_model.ended_at:
-                duration = work_entry_model.ended_at - work_entry_model.started_at
-                actual_minutes = int(duration.total_seconds() / 60)
+                # Ensure both datetimes are timezone-aware for calculation
+                started = work_entry_model.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                ended = work_entry_model.ended_at
+                if ended.tzinfo is None:
+                    ended = ended.replace(tzinfo=timezone.utc)
+
+                duration = ended - started
+                minutes = int(duration.total_seconds() / 60)
+                # Only set if > 0 (Pydantic validation requires gt=0)
+                if minutes > 0:
+                    actual_minutes = minutes
 
             # Update task state if completed and not repeatable
             if completed and not task_model.repeatable:
