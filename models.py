@@ -7,9 +7,8 @@ from typing import Optional
 from sqlalchemy import (
     Column, Integer, String, DateTime, ForeignKey, Boolean, Date, Float, Text
 )
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import relationship
-from pydantic import BaseModel
+from sqlalchemy.orm import declarative_base, relationship
+from pydantic import BaseModel, ConfigDict
 
 Base = declarative_base()
 
@@ -158,14 +157,14 @@ class GoalProgressHistoryModel(Base):
 class HabitLogModel(Base):
     '''Simple habit completion tracking'''
     __tablename__ = 'habit_log'
-    
+
     id = Column(Integer, primary_key=True)
     goal_id = Column(Integer, ForeignKey('weekly_goals.id'), nullable=False)
     logged_date = Column(Date, nullable=False)
     duration_minutes = Column(Integer)
     notes = Column(String(200))
     created_ts = Column(DateTime, nullable=False, default=datetime.now(timezone.utc))
-    
+
     # Define relationship
     goal = relationship('WeeklyGoalModel', backref='habit_logs')
 
@@ -185,9 +184,7 @@ class WorkSession(BaseModel):
     effectiveness_rating: Optional[int] = None
     notes: Optional[str] = None
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Task(BaseModel):
@@ -204,9 +201,7 @@ class Task(BaseModel):
     created_ts: Optional[datetime] = None
     updated_ts: Optional[datetime] = None
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class Recommendation(BaseModel):
@@ -220,9 +215,7 @@ class Recommendation(BaseModel):
     rejected_reason: Optional[str] = None
     rec_ts: datetime = datetime.now(timezone.utc)
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkLog(BaseModel):
@@ -235,9 +228,7 @@ class WorkLog(BaseModel):
     end_ts: Optional[datetime] = None
     completion_pct: Optional[float] = None
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TaskSummary(BaseModel):
@@ -251,9 +242,7 @@ class TaskSummary(BaseModel):
     rating: int = 1
     has_ended: bool = False
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WeeklyGoal(BaseModel):
@@ -269,9 +258,7 @@ class WeeklyGoal(BaseModel):
     created_ts: datetime = datetime.now(timezone.utc)
     updated_ts: Optional[datetime] = None
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class GoalTask(BaseModel):
@@ -284,9 +271,7 @@ class GoalTask(BaseModel):
     created_ts: datetime = datetime.now(timezone.utc)
     updated_ts: Optional[datetime] = None
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class GoalProgressHistory(BaseModel):
@@ -297,9 +282,7 @@ class GoalProgressHistory(BaseModel):
     notes: Optional[str] = None
     completion_pct: float
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class HabitLog(BaseModel):
@@ -311,6 +294,4 @@ class HabitLog(BaseModel):
     notes: Optional[str] = None
     created_ts: datetime = datetime.now(timezone.utc)
 
-    class Config:
-        '''from_attributes allows Pydantic to work with SQLAlchemy models'''
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

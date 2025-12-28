@@ -54,7 +54,7 @@ class TestWeeklyGoalPydantic:
         goal = WeeklyGoal(
             title='Complete project',
             category='grow',
-            week_start=datetime.now(timezone.utc)
+            week_start=datetime.now(timezone.utc).date()
         )
         assert goal.title == 'Complete project'
         assert goal.category == 'grow'
@@ -66,7 +66,7 @@ class TestWeeklyGoalPydantic:
         with pytest.raises(ValueError):
             WeeklyGoal(
                 title='',
-                week_start=datetime.now(timezone.utc)
+                week_start=datetime.now(timezone.utc).date()
             )
 
     def test_title_max_length(self):
@@ -75,7 +75,7 @@ class TestWeeklyGoalPydantic:
         with pytest.raises(ValueError):
             WeeklyGoal(
                 title=long_title,
-                week_start=datetime.now(timezone.utc)
+                week_start=datetime.now(timezone.utc).date()
             )
 
     def test_invalid_category(self):
@@ -84,7 +84,7 @@ class TestWeeklyGoalPydantic:
             WeeklyGoal(
                 title='Test',
                 category='invalid',
-                week_start=datetime.now(timezone.utc)
+                week_start=datetime.now(timezone.utc).date()
             )
 
     def test_invalid_status(self):
@@ -93,14 +93,14 @@ class TestWeeklyGoalPydantic:
             WeeklyGoal(
                 title='Test',
                 status='invalid',
-                week_start=datetime.now(timezone.utc)
+                week_start=datetime.now(timezone.utc).date()
             )
 
     def test_optional_description(self):
         '''Test description is optional.'''
         goal = WeeklyGoal(
             title='Test',
-            week_start=datetime.now(timezone.utc)
+            week_start=datetime.now(timezone.utc).date()
         )
         assert goal.description is None
 
@@ -111,7 +111,7 @@ class TestWeeklyGoalPydantic:
             WeeklyGoal(
                 title='Test',
                 description=long_desc,
-                week_start=datetime.now(timezone.utc)
+                week_start=datetime.now(timezone.utc).date()
             )
 
 
@@ -310,7 +310,7 @@ class TestWeeklyGoalModel:
         '''Test creating a goal in the database.'''
         goal = WeeklyGoalModel(
             title='Test Goal',
-            week_start=datetime.now(timezone.utc)
+            week_start=datetime.now(timezone.utc).date()
         )
         db_session.add(goal)
         db_session.commit()
@@ -324,7 +324,7 @@ class TestWeeklyGoalModel:
         goal = WeeklyGoalModel(
             title='Test',
             category='invalid',
-            week_start=datetime.now(timezone.utc)
+            week_start=datetime.now(timezone.utc).date()
         )
         db_session.add(goal)
         with pytest.raises(IntegrityError):
@@ -335,7 +335,7 @@ class TestWeeklyGoalModel:
         goal = WeeklyGoalModel(
             title='Test',
             status='invalid',
-            week_start=datetime.now(timezone.utc)
+            week_start=datetime.now(timezone.utc).date()
         )
         db_session.add(goal)
         with pytest.raises(IntegrityError):
@@ -345,7 +345,7 @@ class TestWeeklyGoalModel:
         '''Test that deleting a goal cascades to tasks.'''
         goal = WeeklyGoalModel(
             title='Test Goal',
-            week_start=datetime.now(timezone.utc)
+            week_start=datetime.now(timezone.utc).date()
         )
         db_session.add(goal)
         db_session.commit()

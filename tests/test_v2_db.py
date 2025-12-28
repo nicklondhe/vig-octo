@@ -1125,6 +1125,105 @@ class TestTaskEdgeCases:
         assert updated_task.est_minutes == 60
 
 
+class TestCountTasks:
+    '''Tests for count_tasks method.'''
+
+    def test_count_all_tasks(self, task_db):
+        '''Test counting all tasks without filters.'''
+        task_db.create_task('Task 1', 'grow')
+        task_db.create_task('Task 2', 'maintain')
+        task_db.create_task('Task 3', 'sustain')
+
+        count = task_db.count_tasks()
+        assert count == 3
+
+    def test_count_empty_database(self, task_db):
+        '''Test count returns 0 for empty database.'''
+        count = task_db.count_tasks()
+        assert count == 0
+
+    def test_count_by_state(self, task_db):
+        '''Test counting tasks filtered by state.'''
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'grow')
+        task_db.create_task('Task 3', 'grow')
+
+        # Change some states
+        task_db.update_task_state(task1.id, 'done')
+        task_db.update_task_state(task2.id, 'done')
+
+        assert task_db.count_tasks(state='done') == 2
+        assert task_db.count_tasks(state='ready') == 1
+        assert task_db.count_tasks(state='active') == 0
+
+    def test_count_by_category(self, task_db):
+        '''Test counting tasks filtered by category.'''
+        task_db.create_task('Task 1', 'grow')
+        task_db.create_task('Task 2', 'grow')
+        task_db.create_task('Task 3', 'maintain')
+        task_db.create_task('Task 4', 'sustain')
+
+        assert task_db.count_tasks(category='grow') == 2
+        assert task_db.count_tasks(category='maintain') == 1
+        assert task_db.count_tasks(category='sustain') == 1
+
+    def test_count_by_goal_id(self, task_db):
+        '''Test counting tasks filtered by goal_id.'''
+        week_start = get_week_start()
+        goal1 = task_db.create_weekly_goal('Goal 1', week_start)
+        goal2 = task_db.create_weekly_goal('Goal 2', week_start)
+
+        task_db.create_task('Task 1', 'grow', goal_id=goal1.id)
+        task_db.create_task('Task 2', 'grow', goal_id=goal1.id)
+        task_db.create_task('Task 3', 'grow', goal_id=goal2.id)
+        task_db.create_task('Task 4', 'grow')  # No goal
+
+        assert task_db.count_tasks(goal_id=goal1.id) == 2
+        assert task_db.count_tasks(goal_id=goal2.id) == 1
+        assert task_db.count_tasks(goal_id=None) == 4  # All tasks
+
+    def test_count_by_repeatable(self, task_db):
+        '''Test counting tasks filtered by repeatable flag.'''
+        task_db.create_task('Task 1', 'grow', repeatable=True)
+        task_db.create_task('Task 2', 'grow', repeatable=True)
+        task_db.create_task('Task 3', 'grow', repeatable=False)
+        task_db.create_task('Task 4', 'grow')  # Defaults to False
+
+        assert task_db.count_tasks(repeatable=True) == 2
+        assert task_db.count_tasks(repeatable=False) == 2
+
+    def test_count_with_multiple_filters(self, task_db):
+        '''Test counting tasks with multiple filters combined.'''
+        week_start = get_week_start()
+        goal = task_db.create_weekly_goal('Goal', week_start)
+
+        task1 = task_db.create_task('Task 1', 'grow', goal_id=goal.id, repeatable=True)
+        task_db.create_task('Task 2', 'grow', goal_id=goal.id, repeatable=False)
+        task_db.create_task('Task 3', 'maintain', goal_id=goal.id, repeatable=True)
+
+        task_db.update_task_state(task1.id, 'done')
+
+        # Multiple filters
+        assert task_db.count_tasks(category='grow', goal_id=goal.id) == 2
+        assert task_db.count_tasks(category='grow', repeatable=True, goal_id=goal.id) == 1
+        assert task_db.count_tasks(state='done', category='grow') == 1
+        assert task_db.count_tasks(state='ready', category='maintain', repeatable=True) == 1
+
+    def test_count_sql_level_performance(self, task_db):
+        '''Test that count uses SQL-level COUNT, not fetch-all.'''
+        # Create many tasks
+        for i in range(100):
+            task_db.create_task(f'Task {i}', 'grow')
+
+        # Count should be efficient (SQL-level)
+        count = task_db.count_tasks()
+        assert count == 100
+
+        # Count with filter should also be efficient
+        count_grow = task_db.count_tasks(category='grow')
+        assert count_grow == 100
+
+
 # Session CRUD Tests
 
 
@@ -2040,6 +2139,133 @@ class TestGetAllWorkEntries:
         assert entries[0].id == entry3.id
         assert entries[1].id == entry2.id
         assert entries[2].id == entry1.id
+
+
+class TestCompleteWorkEntry:
+    '''Tests for complete_work_entry atomic operation.'''
+
+    def test_complete_work_entry_basic(self, task_db):
+        '''Test basic work completion updates all fields atomically.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        completed_entry = task_db.complete_work_entry(
+            work_entry.id,
+            completed=True,
+            energy_after=4
+        )
+
+        assert completed_entry is not None
+        assert completed_entry.ended_at is not None
+        assert completed_entry.completed is True
+        assert completed_entry.energy_after == 4
+
+    def test_complete_work_updates_task_state_non_repeatable(self, task_db):
+        '''Test completing work updates task state for non-repeatable tasks.'''
+        session = task_db.create_session()
+        task = task_db.create_task('One-time task', 'grow', repeatable=False)
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        task_db.complete_work_entry(work_entry.id, completed=True)
+
+        # Verify task state was updated to 'done'
+        updated_task = task_db.get_task(task.id)
+        assert updated_task.state == 'done'
+        assert updated_task.completed_at is not None
+
+    def test_complete_work_preserves_repeatable_task_state(self, task_db):
+        '''Test completing work doesn't change state for repeatable tasks.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Repeatable task', 'grow', repeatable=True)
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        task_db.complete_work_entry(work_entry.id, completed=True)
+
+        # Verify task state stays 'ready' for repeatable tasks
+        updated_task = task_db.get_task(task.id)
+        assert updated_task.state == 'ready'
+        assert updated_task.completed_at is None
+
+    def test_complete_work_updates_avg_energy(self, task_db):
+        '''Test that avg_energy_after is updated from energy_after.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        task_db.complete_work_entry(work_entry.id, completed=True, energy_after=5)
+
+        # Verify avg_energy_after was updated
+        updated_task = task_db.get_task(task.id)
+        assert updated_task.avg_energy_after == 5.0
+
+    def test_complete_work_abandoned(self, task_db):
+        '''Test completing abandoned work doesn't update task state.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        task_db.complete_work_entry(
+            work_entry.id,
+            completed=False,
+            abandoned_reason='blocked'
+        )
+
+        # Verify work entry was marked as abandoned
+        completed_entry = task_db.get_work_entry(work_entry.id)
+        assert completed_entry.completed is False
+        assert completed_entry.abandoned_reason == 'blocked'
+
+        # Verify task state was not changed
+        updated_task = task_db.get_task(task.id)
+        assert updated_task.state == 'ready'
+
+    def test_complete_work_atomicity(self, task_db):
+        '''Test that all updates happen atomically (all or nothing).'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        # Complete work with all parameters
+        completed_entry = task_db.complete_work_entry(
+            work_entry.id,
+            completed=True,
+            energy_after=4,
+            want_more_like_this=True
+        )
+
+        # Verify all fields were updated together
+        assert completed_entry.completed is True
+        assert completed_entry.energy_after == 4
+        assert completed_entry.want_more_like_this is True
+
+        # Verify task was also updated
+        updated_task = task_db.get_task(task.id)
+        assert updated_task.state == 'done'
+        assert updated_task.avg_energy_after == 4.0
+
+    def test_complete_work_invalid_work_id(self, task_db):
+        '''Test completing non-existent work entry returns None.'''
+        result = task_db.complete_work_entry(999, completed=True)
+        assert result is None
+
+    def test_complete_work_with_all_feedback(self, task_db):
+        '''Test completing work with all feedback parameters.'''
+        session = task_db.create_session()
+        task = task_db.create_task('Test Task', 'grow')
+        work_entry = task_db.start_work_entry(session.id, task.id)
+
+        completed_entry = task_db.complete_work_entry(
+            work_entry.id,
+            completed=True,
+            energy_after=5,
+            want_more_like_this=True
+        )
+
+        assert completed_entry.completed is True
+        assert completed_entry.energy_after == 5
+        assert completed_entry.want_more_like_this is True
+        assert completed_entry.abandoned_reason is None
 
 
 class TestWorkEntryEdgeCases:
