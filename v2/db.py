@@ -360,6 +360,8 @@ class TaskDB:
         category: Optional[CategoryType] = None,
         goal_id: Optional[int] = None,
         repeatable: Optional[bool] = None,
+        limit: Optional[int] = None,
+        order_desc: bool = True,
     ) -> list[Task]:
         '''Get all tasks with optional filtering.
 
@@ -368,6 +370,8 @@ class TaskDB:
             category: Filter by category (optional)
             goal_id: Filter by goal ID (optional)
             repeatable: Filter by repeatable flag (optional)
+            limit: Maximum number of tasks to return (optional)
+            order_desc: Order by created_at descending (default: True)
 
         Returns:
             List of Task objects matching the filters
@@ -384,8 +388,50 @@ class TaskDB:
             if repeatable is not None:
                 query = query.filter(TaskModel.repeatable == repeatable)
 
-            task_models = query.order_by(TaskModel.created_at).all()
+            # Apply ordering
+            if order_desc:
+                query = query.order_by(TaskModel.created_at.desc())
+            else:
+                query = query.order_by(TaskModel.created_at)
+
+            # Apply limit at SQL level
+            if limit is not None and limit > 0:
+                query = query.limit(limit)
+
+            task_models = query.all()
             return [Task.model_validate(t) for t in task_models]
+
+    def count_tasks(
+        self,
+        state: Optional[TaskStateType] = None,
+        category: Optional[CategoryType] = None,
+        goal_id: Optional[int] = None,
+        repeatable: Optional[bool] = None,
+    ) -> int:
+        '''Count tasks with optional filtering (SQL-level count).
+
+        Args:
+            state: Filter by state (optional)
+            category: Filter by category (optional)
+            goal_id: Filter by goal ID (optional)
+            repeatable: Filter by repeatable flag (optional)
+
+        Returns:
+            Count of tasks matching the filters
+        '''
+        with self.SessionLocal() as session:
+            query = session.query(TaskModel)
+
+            if state is not None:
+                query = query.filter(TaskModel.state == state)
+            if category is not None:
+                query = query.filter(TaskModel.category == category)
+            if goal_id is not None:
+                query = query.filter(TaskModel.goal_id == goal_id)
+            if repeatable is not None:
+                query = query.filter(TaskModel.repeatable == repeatable)
+
+            return query.count()
 
     def update_task(
         self,
@@ -823,6 +869,29 @@ class TaskDB:
             ).all()
             return [Session.model_validate(s) for s in session_models]
 
+    def get_active_sessions(self) -> list[Session]:
+        '''Get all active sessions (not ended).
+
+        Returns:
+            List of active Session objects ordered by started_at descending
+        '''
+        with self.SessionLocal() as session:
+            session_models = session.query(SessionModel).filter(
+                SessionModel.ended_at.is_(None)
+            ).order_by(SessionModel.started_at.desc()).all()
+            return [Session.model_validate(s) for s in session_models]
+
+    def count_active_sessions(self) -> int:
+        '''Count active sessions (not ended) - SQL-level count.
+
+        Returns:
+            Count of active sessions
+        '''
+        with self.SessionLocal() as session:
+            return session.query(SessionModel).filter(
+                SessionModel.ended_at.is_(None)
+            ).count()
+
     # Work Entry helper methods
 
     def _get_work_entry_model(
@@ -919,6 +988,94 @@ class TaskDB:
                     work_entry_model.abandoned_reason = abandoned_reason
                 return self._commit_and_convert_work_entry(session, work_entry_model)
             return None
+
+    def complete_work_entry(
+        self,
+        work_entry_id: int,
+        completed: bool = False,
+        energy_after: Optional[int] = None,
+        want_more_like_this: Optional[bool] = None,
+        abandoned_reason: Optional[str] = None,
+    ) -> Optional[WorkEntry]:
+        '''Complete a work entry and update related task data atomically.
+
+        Ends the work entry, calculates actual minutes, updates task state
+        (if completed and not repeatable), and updates task learning data.
+        All operations are performed in a single transaction.
+
+        Args:
+            work_entry_id: ID of the work entry to complete
+            completed: Whether the task was completed (default: False)
+            energy_after: Energy level after work (1-5 scale, optional)
+            want_more_like_this: Whether user wants more tasks like this (optional)
+            abandoned_reason: Reason for abandonment if not completed (optional)
+
+        Returns:
+            Completed WorkEntry if found, None otherwise
+        '''
+        with self.SessionLocal() as session:
+            # Get work entry
+            work_entry_model = self._get_work_entry_model(session, work_entry_id)
+            if not work_entry_model:
+                return None
+
+            # Get task (fail early if not found)
+            task_model = self._get_task_model(session, work_entry_model.task_id)
+            if not task_model:
+                return None
+
+            # End the work entry
+            work_entry_model.ended_at = datetime.now(timezone.utc)
+            work_entry_model.completed = completed
+            if energy_after is not None:
+                work_entry_model.energy_after = energy_after
+            if want_more_like_this is not None:
+                work_entry_model.want_more_like_this = want_more_like_this
+            if abandoned_reason is not None:
+                work_entry_model.abandoned_reason = abandoned_reason
+
+            # Calculate actual_minutes
+            actual_minutes = None
+            if work_entry_model.started_at and work_entry_model.ended_at:
+                # Ensure both datetimes are timezone-aware for calculation
+                started = work_entry_model.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                ended = work_entry_model.ended_at
+                if ended.tzinfo is None:
+                    ended = ended.replace(tzinfo=timezone.utc)
+
+                duration = ended - started
+                minutes = int(duration.total_seconds() / 60)
+                # Only set if > 0 (Pydantic validation requires gt=0)
+                if minutes > 0:
+                    actual_minutes = minutes
+
+            # Update task state if completed and not repeatable
+            if completed and not task_model.repeatable:
+                task_model.state = 'done'
+                task_model.completed_at = datetime.now(timezone.utc)
+
+            # Update task learning data
+            # Note: avg_energy_after uses times_accepted as the count.
+            # Business layer should increment times_accepted via increment_task_stat
+            # when starting work to maintain 1:1 relationship.
+            if actual_minutes is not None:
+                task_model.actual_minutes = actual_minutes
+
+            if energy_after is not None:
+                if task_model.avg_energy_after is None:
+                    task_model.avg_energy_after = float(energy_after)
+                else:
+                    count = task_model.times_accepted or 1
+                    current_total = task_model.avg_energy_after * (count - 1)
+                    new_total = current_total + energy_after
+                    task_model.avg_energy_after = new_total / count
+
+            # Commit all changes in single transaction
+            session.commit()
+            session.refresh(work_entry_model)
+            return WorkEntry.model_validate(work_entry_model)
 
     def get_work_entry(self, work_entry_id: int) -> Optional[WorkEntry]:
         '''Get a specific work entry by ID.
