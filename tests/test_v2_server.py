@@ -1,7 +1,6 @@
 '''Unit tests for v2 MCP server'''
 
 import sys
-import time
 from pathlib import Path
 from datetime import datetime, timezone
 
