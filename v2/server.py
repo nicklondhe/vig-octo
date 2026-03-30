@@ -550,6 +550,7 @@ def reset_tasks(task_ids: list[int]) -> ResetTasksResponse:
                 message="No task IDs provided",
             )
 
+        task_ids = list(dict.fromkeys(task_ids))
         reset = task_db.reset_tasks(task_ids)
         reset_ids = [t.id for t in reset if t.id is not None]
 
@@ -593,7 +594,7 @@ def daily_triage() -> DailyTriageResponse:
                 task_id=task.id,  # type: ignore[arg-type]
                 title=task.title,
                 category=task.category,
-                last_completed_at=task.last_completed_at,
+                last_completed_at=completed_at if task.last_completed_at is not None else None,
                 days_since_completion=days_since,
             ))
 

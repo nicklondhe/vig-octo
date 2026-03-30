@@ -734,11 +734,15 @@ class TestResetTasks:
         task_db.increment_task_stat(task.id, 'accepted')
         task_db.update_task_state(task.id, 'done')
 
+        before = task_db.get_task(task.id)
+        assert before.last_completed_at is not None  # set when marked done
+
         server.reset_tasks([task.id])
 
         updated = task_db.get_task(task.id)
         assert updated.state == 'ready'
         assert updated.times_accepted == 1  # learning data preserved
+        assert updated.last_completed_at == before.last_completed_at  # last_completed_at preserved
 
 
 # Daily Triage Tests
