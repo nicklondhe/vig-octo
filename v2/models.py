@@ -430,6 +430,18 @@ class EndSessionResponse(BaseModel):
     summary: Optional[SessionSummary] = None
 
 
+class WeeklyReviewResponse(BaseModel):
+    '''Response for the weekly_review tool.'''
+    success: bool
+    message: str
+    goal_id: Optional[int] = None
+    goal_title: Optional[str] = None
+    tasks_total: int = 0
+    tasks_completed: int = 0
+    time_invested_minutes: int = 0
+    completion_pct: float = 0.0
+
+
 # Database helper functions
 
 def create_tables(engine) -> None:
