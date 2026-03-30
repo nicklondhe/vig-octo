@@ -253,6 +253,7 @@ class TaskCreate(TaskBase):
     pass  # Inherits all validation from TaskBase
 
 
+
 class TaskUpdate(BaseModel):
     '''Request model for updating tasks (all fields optional, used by MCP server)'''
     title: Optional[str] = Field(None, min_length=1, max_length=500)
@@ -400,6 +401,23 @@ class WeeklyGoalResponse(BaseModel):
     success: bool
     message: str
     goal_id: Optional[int] = None
+
+
+class TaskRecItem(BaseModel):
+    '''Single recommendation item returned by the rec engine.'''
+    task_id: int
+    title: str
+    category: CategoryType
+    est_minutes: Optional[int] = None
+    score: float = Field(..., ge=0.0, le=1.0)
+    breakdown: dict[str, float]
+
+
+class RecResponse(BaseModel):
+    '''Response for get_recommendations requests.'''
+    success: bool
+    message: str
+    recommendations: list[TaskRecItem]
 
 
 # Database helper functions

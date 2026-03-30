@@ -10,6 +10,7 @@ dependencies = [
     "mcp[cli]>=1.8.0",
     "mypy>=1.15.0",
     "pydantic>=2.11.4",
+    "pandas>=2.0.0",
     "sqlalchemy>=2.0.40",
     "tomli>=2.0.1",
 ]

@@ -21,9 +21,11 @@ from v2.models import (
     HealthCheckResponse,
     SessionResponse,
     WorkEntryResponse,
+    RecResponse,
     TaskStateType,
     CategoryType,
 )
+from v2.rec_engine import RecEngine
 
 # Get configuration
 config = get_config()
@@ -309,6 +311,53 @@ def complete_work(
             success=False,
             message=f"Failed to complete work: {str(e)}",
             work_entry_id=None
+        )
+
+
+@mcp.tool()
+def get_recommendations(
+    session_id: int | None = None,
+    available_minutes: int | None = None,
+    focus_area: CategoryType | None = None,
+    n: int = 5,
+) -> RecResponse:
+    '''Recommend the top n tasks for the current context.
+
+    Uses a weighted scoring system across four axes:
+      - time_match (0.30): fits within available time
+      - balance (0.20): avoids over-sampling one category
+      - rejection_penalty (0.25): penalises recently/frequently rejected tasks
+      - momentum_completion (0.25): favours tasks that build dopamine/flow
+
+    Args:
+        session_id:        Active session ID.  When provided, available_minutes
+                           and focus_area are loaded from the session (explicit
+                           args take precedence).
+        available_minutes: Minutes available.  Overrides session value.
+        focus_area:        Category to favour ('grow', 'maintain', 'sustain').
+        n:                 Number of recommendations to return (default 5).
+
+    Returns:
+        RecResponse with ranked recommendations and per-axis score breakdowns.
+    '''
+    try:
+        rec_engine = RecEngine(task_db)
+        recs = rec_engine.recommend(
+            available_minutes=available_minutes,
+            session_id=session_id,
+            focus_area=focus_area,
+            n=n,
+        )
+        return RecResponse(
+            success=True,
+            message=f'Found {len(recs)} recommendations',
+            recommendations=recs,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return RecResponse(
+            success=False,
+            message=f'Recommendation failed: {str(e)}',
+            recommendations=[],
         )
 
 
