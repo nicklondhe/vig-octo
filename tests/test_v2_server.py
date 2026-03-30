@@ -564,3 +564,44 @@ class TestSetWeeklyGoal:
             assert False, 'Should have raised an error'
         except Exception:
             pass  # Expected
+
+
+# Link Task to Goal Tests
+
+class TestLinkTaskToGoal:
+    '''Tests for link_task_to_goal tool'''
+
+    def test_link_task_to_goal_success(self, setup_server, task_db):
+        '''Test linking a task to a goal updates goal_id'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='My Goal', week_start=get_week_start())
+        task_data = TaskCreate(title='Some task', category='grow')
+        task_resp = server.add_task(task_data)
+        task_id = task_resp.task_id
+
+        response = server.link_task_to_goal(task_id=task_id, goal_id=goal.id)
+
+        assert response.success is True
+        assert response.task_id == task_id
+        updated = task_db.get_task(task_id)
+        assert updated.goal_id == goal.id
+
+    def test_link_task_to_goal_invalid_task(self, setup_server, task_db):
+        '''Test linking with a non-existent task returns failure'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='My Goal', week_start=get_week_start())
+
+        response = server.link_task_to_goal(task_id=9999, goal_id=goal.id)
+
+        assert response.success is False
+        assert 'not found' in response.message
+
+    def test_link_task_to_goal_invalid_goal(self, setup_server):
+        '''Test linking with a non-existent goal returns failure'''
+        task_data = TaskCreate(title='Some task', category='grow')
+        task_resp = server.add_task(task_data)
+
+        response = server.link_task_to_goal(task_id=task_resp.task_id, goal_id=9999)
+
+        assert response.success is False
+        assert 'not found' in response.message

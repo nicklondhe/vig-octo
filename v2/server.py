@@ -423,3 +423,48 @@ def set_weekly_goal(
             message=f"Failed to create weekly goal: {str(e)}",
             goal_id=None,
         )
+
+
+@mcp.tool()
+def link_task_to_goal(task_id: int, goal_id: int) -> TaskResponse:
+    '''Link an existing task to a weekly goal.
+
+    Updates the task's goal_id field.
+
+    Args:
+        task_id: ID of the task to link
+        goal_id: ID of the weekly goal to link to
+
+    Returns:
+        TaskResponse with success status
+    '''
+    try:
+        task = task_db.get_task(task_id)
+        if task is None:
+            return TaskResponse(
+                success=False,
+                message=f"Task {task_id} not found",
+                task_id=None,
+            )
+
+        goal = task_db.get_weekly_goal(goal_id)
+        if goal is None:
+            return TaskResponse(
+                success=False,
+                message=f"Goal {goal_id} not found",
+                task_id=None,
+            )
+
+        task_db.update_task(task_id, goal_id=goal_id)
+
+        return TaskResponse(
+            success=True,
+            message=f"Task '{task.title}' linked to goal '{goal.title}'",
+            task_id=task_id,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return TaskResponse(
+            success=False,
+            message=f"Failed to link task to goal: {str(e)}",
+            task_id=None,
+        )
