@@ -672,3 +672,12 @@ class TestWeeklyReview:
         assert response.success is True
         assert response.tasks_completed == 1
         assert response.completion_pct == 100.0
+
+    def test_weekly_review_picks_most_recent_goal(self, setup_server):
+        '''Test that weekly_review reports on the most recently created active goal'''
+        server.set_weekly_goal(title='Older goal')
+        server.set_weekly_goal(title='Newer goal')
+
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.goal_title == 'Newer goal'

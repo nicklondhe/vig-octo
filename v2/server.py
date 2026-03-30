@@ -491,7 +491,8 @@ def weekly_review() -> WeeklyReviewResponse:
                 message="No active goal set for this week",
             )
 
-        goal = active_goals[0]
+        # Most recently created active goal is the intentional current one
+        goal = max(active_goals, key=lambda g: g.created_at)
         tasks = task_db.get_tasks_by_goal(goal.id)
 
         tasks_total = len(tasks)
