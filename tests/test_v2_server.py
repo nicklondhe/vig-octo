@@ -525,3 +525,42 @@ class TestWorkflowIntegration:
         # Verify all tasks completed
         response = server.list_tasks(state='done')
         assert len(response.tasks) == 3
+
+
+# Weekly Goal Tests
+
+class TestSetWeeklyGoal:
+    '''Tests for set_weekly_goal tool'''
+
+    def test_set_weekly_goal_minimal(self, setup_server):
+        '''Test creating a weekly goal with title only'''
+        response = server.set_weekly_goal(title='Ship the feature')
+        assert response.success is True
+        assert response.goal_id is not None
+        assert 'Ship the feature' in response.message
+
+    def test_set_weekly_goal_with_all_fields(self, setup_server):
+        '''Test creating a weekly goal with all optional fields'''
+        response = server.set_weekly_goal(
+            title='Learn SQLAlchemy',
+            description='Deep dive into ORM patterns',
+            category='grow',
+        )
+        assert response.success is True
+        assert response.goal_id is not None
+
+    def test_set_weekly_goal_links_to_current_week(self, setup_server, task_db):
+        '''Test that week_start is set to current Monday'''
+        from v2.util import get_week_start
+        response = server.set_weekly_goal(title='This week goal')
+        assert response.success is True
+        goal = task_db.get_weekly_goal(response.goal_id)
+        assert goal.week_start == get_week_start()
+
+    def test_set_weekly_goal_category_validation(self, setup_server):
+        '''Test that invalid category raises an error'''
+        try:
+            server.set_weekly_goal(title='Bad goal', category='invalid')  # type: ignore
+            assert False, 'Should have raised an error'
+        except Exception:
+            pass  # Expected

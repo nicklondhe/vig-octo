@@ -25,8 +25,10 @@ from v2.models import (
     SessionSummary,
     TaskStateType,
     CategoryType,
+    WeeklyGoalResponse,
 )
 from v2.rec_engine import RecEngine
+from v2.util import get_week_start
 
 # Get configuration
 config = get_config()
@@ -381,4 +383,43 @@ def end_session(
         return EndSessionResponse(
             success=False,
             message=f"Failed to end session: {str(e)}",
+        )
+
+
+@mcp.tool()
+def set_weekly_goal(
+    title: str,
+    description: str | None = None,
+    category: CategoryType | None = None,
+) -> WeeklyGoalResponse:
+    '''Create a goal for the current week.
+
+    Automatically sets week_start to Monday of the current week.
+
+    Args:
+        title: Goal title (required)
+        description: Optional description of the goal
+        category: Optional category ('grow', 'maintain', 'sustain')
+
+    Returns:
+        WeeklyGoalResponse with goal_id
+    '''
+    try:
+        week_start = get_week_start()
+        goal = task_db.create_weekly_goal(
+            title=title,
+            week_start=week_start,
+            description=description,
+            category=category,
+        )
+        return WeeklyGoalResponse(
+            success=True,
+            message=f"Goal '{title}' created for week of {week_start}",
+            goal_id=goal.id,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return WeeklyGoalResponse(
+            success=False,
+            message=f"Failed to create weekly goal: {str(e)}",
+            goal_id=None,
         )
