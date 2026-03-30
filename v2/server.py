@@ -21,7 +21,8 @@ from v2.models import (
     HealthCheckResponse,
     SessionResponse,
     WorkEntryResponse,
-    RecResponse,
+    EndSessionResponse,
+    SessionSummary,
     TaskStateType,
     CategoryType,
 )
@@ -194,10 +195,13 @@ def start_session(
             focus_area=focus_area
         )
 
+        recs = RecEngine(task_db).recommend(session_id=session.id)
+
         return SessionResponse(
             success=True,
             message=f"Session {session.id} started",
-            session_id=session.id
+            session_id=session.id,
+            recommendations=recs,
         )
     except Exception as e:  # pylint: disable=broad-except
         return SessionResponse(
@@ -315,90 +319,66 @@ def complete_work(
 
 
 @mcp.tool()
-def get_recommendations(
-    session_id: int | None = None,
-    available_minutes: int | None = None,
-    focus_area: CategoryType | None = None,
-    n: int = 5,
-) -> RecResponse:
-    '''Recommend the top n tasks for the current context.
-
-    Uses a weighted scoring system across four axes:
-      - time_match (0.30): fits within available time
-      - balance (0.20): avoids over-sampling one category
-      - rejection_penalty (0.25): penalises recently/frequently rejected tasks
-      - momentum_completion (0.25): favours tasks that build dopamine/flow
-
-    Args:
-        session_id:        Active session ID.  When provided, available_minutes
-                           and focus_area are loaded from the session (explicit
-                           args take precedence).
-        available_minutes: Minutes available.  Overrides session value.
-        focus_area:        Category to favour ('grow', 'maintain', 'sustain').
-        n:                 Number of recommendations to return (default 5).
-
-    Returns:
-        RecResponse with ranked recommendations and per-axis score breakdowns.
-    '''
-    try:
-        rec_engine = RecEngine(task_db)
-        recs = rec_engine.recommend(
-            available_minutes=available_minutes,
-            session_id=session_id,
-            focus_area=focus_area,
-            n=n,
-        )
-        return RecResponse(
-            success=True,
-            message=f'Found {len(recs)} recommendations',
-            recommendations=recs,
-        )
-    except Exception as e:  # pylint: disable=broad-except
-        return RecResponse(
-            success=False,
-            message=f'Recommendation failed: {str(e)}',
-            recommendations=[],
-        )
-
-
-@mcp.tool()
 def end_session(
     session_id: int,
-    tasks_completed: int | None = None,
-    effectiveness: int | None = None
-) -> SessionResponse:
-    '''End a work session.
+    effectiveness: int | None = None,
+) -> EndSessionResponse:
+    '''End a work session and return a summary of what was accomplished.
+
+    Calculates tasks_completed and category breakdown from work entries
+    automatically — no need to pass them manually.
 
     Args:
-        session_id: ID of the session to end
-        tasks_completed: Number of tasks completed in session (optional)
+        session_id:    ID of the session to end
         effectiveness: Self-rated effectiveness 1-5 (optional)
 
     Returns:
-        SessionResponse with success status
+        EndSessionResponse with session summary (duration, tasks completed,
+        category breakdown, effectiveness)
     '''
     try:
+        # Compute stats from work entries before closing
+        entries = task_db.get_work_entries_by_session(session_id)
+        completed_entries = [e for e in entries if e.completed]
+        tasks_completed = len(completed_entries)
+
+        categories_completed: dict[str, int] = {}
+        if completed_entries:
+            entry_tasks = task_db.get_tasks_by_ids([e.task_id for e in completed_entries])
+            cat_by_id = {t.id: t.category for t in entry_tasks}
+            for entry in completed_entries:
+                cat = cat_by_id.get(entry.task_id, 'unknown')
+                categories_completed[cat] = categories_completed.get(cat, 0) + 1
+
         session = task_db.end_session(
             session_id=session_id,
             tasks_completed=tasks_completed,
-            effectiveness=effectiveness
+            effectiveness=effectiveness,
         )
 
         if session is None:
-            return SessionResponse(
+            return EndSessionResponse(
                 success=False,
                 message=f"Session {session_id} not found",
-                session_id=None
             )
 
-        return SessionResponse(
+        duration = int(
+            (session.ended_at - session.started_at).total_seconds() / 60
+        ) if session.ended_at else 0
+
+        return EndSessionResponse(
             success=True,
-            message=f"Session {session_id} ended",
-            session_id=session_id
+            message=f"Session {session_id} ended — {tasks_completed} task(s) completed",
+            summary=SessionSummary(
+                session_id=session_id,
+                duration_minutes=duration,
+                tasks_completed=tasks_completed,
+                effectiveness=effectiveness,
+                categories_completed=categories_completed,
+            ),
         )
     except Exception as e:  # pylint: disable=broad-except
-        return SessionResponse(
+        return EndSessionResponse(
             success=False,
             message=f"Failed to end session: {str(e)}",
-            session_id=None
         )

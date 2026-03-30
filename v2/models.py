@@ -387,6 +387,7 @@ class SessionResponse(BaseModel):
     success: bool
     message: str
     session_id: Optional[int] = None
+    recommendations: list['TaskRecItem'] = []
 
 
 class WorkEntryResponse(BaseModel):
@@ -403,6 +404,22 @@ class WeeklyGoalResponse(BaseModel):
     goal_id: Optional[int] = None
 
 
+class SessionSummary(BaseModel):
+    '''Stats computed at session close.'''
+    session_id: int
+    duration_minutes: int
+    tasks_completed: int
+    effectiveness: Optional[int] = None
+    categories_completed: dict[str, int]
+
+
+class EndSessionResponse(BaseModel):
+    '''Response for end_session.'''
+    success: bool
+    message: str
+    summary: Optional[SessionSummary] = None
+
+
 class TaskRecItem(BaseModel):
     '''Single recommendation item returned by the rec engine.'''
     task_id: int
@@ -412,12 +429,6 @@ class TaskRecItem(BaseModel):
     score: float = Field(..., ge=0.0, le=1.0)
     breakdown: dict[str, float]
 
-
-class RecResponse(BaseModel):
-    '''Response for get_recommendations requests.'''
-    success: bool
-    message: str
-    recommendations: list[TaskRecItem]
 
 
 # Database helper functions
