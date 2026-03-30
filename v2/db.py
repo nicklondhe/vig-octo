@@ -1272,6 +1272,27 @@ class TaskDB:
             ).all()
             return [WorkEntry.model_validate(we) for we in work_entry_models]
 
+    def get_category_distribution(self, work_entry_ids: list[int]) -> dict[str, int]:
+        '''Get category counts for a set of work entries via a SQL GROUP BY join.
+
+        Args:
+            work_entry_ids: IDs of work entries to aggregate
+
+        Returns:
+            Dict mapping category name to count of work entries in that category
+        '''
+        if not work_entry_ids:
+            return {}
+        with self.SessionLocal() as session:
+            rows = (
+                session.query(TaskModel.category, func.count(WorkEntryModel.id))
+                .join(WorkEntryModel, WorkEntryModel.task_id == TaskModel.id)
+                .filter(WorkEntryModel.id.in_(work_entry_ids))
+                .group_by(TaskModel.category)
+                .all()
+            )
+            return {category: count for category, count in rows}
+
     def get_completed_work_entries_since(self, days: int) -> list[WorkEntry]:
         '''Get completed work entries from the last N days.
 
@@ -1288,3 +1309,38 @@ class TaskDB:
                 WorkEntryModel.started_at >= cutoff,
             ).order_by(WorkEntryModel.started_at.desc()).all()
             return [WorkEntry.model_validate(m) for m in models]
+
+    def get_current_streak(self) -> int:
+        '''Compute the current streak: consecutive days ending today with completed work.
+
+        Scans all completed work entries (no date cap) so the streak is never
+        under-reported due to the stats lookback window. Uses ended_at as the
+        activity date (falling back to started_at) so sessions spanning midnight
+        are attributed to the completion day.
+
+        Returns:
+            Number of consecutive days ending today that had at least one
+            completed work entry (0 if today has none).
+        '''
+        with self.SessionLocal() as session:
+            date_col = func.date(
+                func.coalesce(WorkEntryModel.ended_at, WorkEntryModel.started_at)
+            ).label('activity_date')
+            rows = (
+                session.query(date_col)
+                .filter(WorkEntryModel.completed.is_(True))
+                .distinct()
+                .order_by(date_col.desc())
+                .all()
+            )
+
+        streak = 0
+        current_day = datetime.now(timezone.utc).date()
+        for row in rows:
+            d = date.fromisoformat(row.activity_date)
+            if d == current_day:
+                streak += 1
+                current_day -= timedelta(days=1)
+            elif d < current_day:
+                break
+        return streak

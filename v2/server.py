@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
@@ -349,13 +349,9 @@ def end_session(
         completed_entries = [e for e in entries if e.completed]
         tasks_completed = len(completed_entries)
 
-        categories_completed: dict[str, int] = {}
-        if completed_entries:
-            entry_tasks = task_db.get_tasks_by_ids([e.task_id for e in completed_entries])
-            cat_by_id = {t.id: t.category for t in entry_tasks}
-            for entry in completed_entries:
-                cat = cat_by_id.get(entry.task_id, 'unknown')
-                categories_completed[cat] = categories_completed.get(cat, 0) + 1
+        categories_completed = task_db.get_category_distribution(
+            [e.id for e in completed_entries]
+        )
 
         session = task_db.end_session(
             session_id=session_id,
@@ -636,14 +632,9 @@ def get_stats(days: int = 7) -> StatsResponse:
         tasks_completed = len(entries)
 
         # Category distribution
-        task_ids = [e.task_id for e in entries]
-        tasks = task_db.get_tasks_by_ids(task_ids) if task_ids else []
-        cat_by_id = {t.id: t.category for t in tasks}
-
-        category_distribution: dict[str, int] = {}
-        for entry in entries:
-            cat = cat_by_id.get(entry.task_id, 'unknown')
-            category_distribution[cat] = category_distribution.get(cat, 0) + 1
+        category_distribution = task_db.get_category_distribution(
+            [e.id for e in entries]
+        )
 
         # Total minutes from work entry durations
         total_minutes = 0
@@ -658,21 +649,9 @@ def get_stats(days: int = 7) -> StatsResponse:
                 minutes = int((ended - started).total_seconds() / 60)
                 total_minutes += max(0, minutes)
 
-        # Streak: consecutive days ending today with at least one completed entry
-        from datetime import date as date_type
-        active_dates: set[date_type] = set()
-        for entry in entries:
-            started = entry.started_at
-            if started.tzinfo is None:
-                started = started.replace(tzinfo=timezone.utc)
-            active_dates.add(started.date())
-
-        streak = 0
-        today = datetime.now(timezone.utc).date()
-        current_day = today
-        while current_day in active_dates:
-            streak += 1
-            current_day -= timedelta(days=1)
+        # Streak queries all history (not capped by days) so a 30-day streak
+        # is reported correctly even when days=7.
+        streak = task_db.get_current_streak()
 
         return StatsResponse(
             success=True,

@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,7 +12,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from v2.db import TaskDB
-from v2.models import Base, TaskCreate
+from v2.models import Base, TaskCreate, WorkEntryModel
 from v2 import server
 
 
@@ -873,3 +873,65 @@ class TestGetStats:
 
         assert response.success is True
         assert response.current_streak == 1
+
+    def test_get_stats_total_minutes(self, setup_server, task_db):
+        '''Test total_minutes sums actual work entry durations'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        we = task_db.start_work_entry(session.id, task.id)
+
+        # Backdate started_at so the duration is measurable
+        thirty_min_ago = datetime.now(timezone.utc) - timedelta(minutes=30)
+        with task_db.SessionLocal() as db_session:
+            model = db_session.query(WorkEntryModel).filter_by(id=we.id).first()
+            model.started_at = thirty_min_ago
+            db_session.commit()
+
+        task_db.complete_work_entry(we.id, completed=True)
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.total_minutes >= 30
+
+    def test_get_stats_streak_multi_day(self, setup_server, task_db):
+        '''Test streak counts consecutive days correctly'''
+        session = task_db.create_session()
+
+        for days_ago in [0, 1, 2]:
+            task = task_db.create_task(f'Task {days_ago}', 'grow')
+            we = task_db.start_work_entry(session.id, task.id)
+            task_db.complete_work_entry(we.id, completed=True)
+            # Backdate both timestamps — streak uses ended_at for the activity date
+            entry_time = datetime.now(timezone.utc) - timedelta(days=days_ago, hours=1)
+            with task_db.SessionLocal() as db_session:
+                model = db_session.query(WorkEntryModel).filter_by(id=we.id).first()
+                model.started_at = entry_time
+                model.ended_at = entry_time + timedelta(minutes=30)
+                db_session.commit()
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.current_streak == 3
+
+    def test_get_stats_streak_with_gap(self, setup_server, task_db):
+        '''Test streak resets at a gap — only today counts when yesterday is missing'''
+        session = task_db.create_session()
+
+        # Entry today and two days ago, nothing yesterday
+        for days_ago in [0, 2]:
+            task = task_db.create_task(f'Task {days_ago}', 'grow')
+            we = task_db.start_work_entry(session.id, task.id)
+            task_db.complete_work_entry(we.id, completed=True)
+            entry_time = datetime.now(timezone.utc) - timedelta(days=days_ago, hours=1)
+            with task_db.SessionLocal() as db_session:
+                model = db_session.query(WorkEntryModel).filter_by(id=we.id).first()
+                model.started_at = entry_time
+                model.ended_at = entry_time + timedelta(minutes=30)
+                db_session.commit()
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.current_streak == 1  # yesterday breaks the chain
