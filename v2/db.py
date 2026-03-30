@@ -5,7 +5,7 @@ Database access layer for v2 task management system.
 from datetime import date, datetime, timezone
 from typing import Literal, Optional
 
-from sqlalchemy import Engine
+from sqlalchemy import Engine, func
 from sqlalchemy.orm import Session as DBSession
 from sqlalchemy.orm import sessionmaker
 
@@ -1125,6 +1125,88 @@ class TaskDB:
                 WorkEntryModel.task_id == task_id
             ).order_by(WorkEntryModel.started_at.desc()).all()
             return [WorkEntry.model_validate(we) for we in work_entry_models]
+
+    def get_tasks_by_ids(self, task_ids: list[int]) -> list[Task]:
+        '''Fetch multiple tasks by ID in a single query.
+
+        Args:
+            task_ids: List of task IDs to retrieve
+
+        Returns:
+            List of Task objects (order not guaranteed)
+        '''
+        if not task_ids:
+            return []
+        with self.SessionLocal() as session:
+            models = session.query(TaskModel).filter(
+                TaskModel.id.in_(task_ids)
+            ).all()
+            return [Task.model_validate(m) for m in models]
+
+    def get_latest_abandoned_entries_batch(
+        self,
+        task_ids: list[int],
+    ) -> list[WorkEntry]:
+        '''For each task ID, fetch the most recent abandoned work entry in one query.
+
+        Args:
+            task_ids: Task IDs to check
+
+        Returns:
+            One WorkEntry per task that has at least one abandonment (others omitted)
+        '''
+        if not task_ids:
+            return []
+        with self.SessionLocal() as session:
+            # Step 1: max started_at per task among abandoned entries
+            started_subq = (
+                session.query(
+                    WorkEntryModel.task_id,
+                    func.max(WorkEntryModel.started_at).label('max_started'),
+                )
+                .filter(
+                    WorkEntryModel.task_id.in_(task_ids),
+                    WorkEntryModel.abandoned_reason.isnot(None),
+                )
+                .group_by(WorkEntryModel.task_id)
+                .subquery()
+            )
+            # Step 2: from any ties on started_at, pick the highest id per task
+            id_subq = (
+                session.query(func.max(WorkEntryModel.id).label('max_id'))
+                .join(
+                    started_subq,
+                    (WorkEntryModel.task_id == started_subq.c.task_id)
+                    & (WorkEntryModel.started_at == started_subq.c.max_started),
+                )
+                .group_by(WorkEntryModel.task_id)
+                .subquery()
+            )
+            models = (
+                session.query(WorkEntryModel)
+                .filter(WorkEntryModel.id.in_(session.query(id_subq.c.max_id)))
+                .all()
+            )
+            return [WorkEntry.model_validate(m) for m in models]
+
+    def get_latest_abandoned_entry(
+        self,
+        task_id: int,
+    ) -> Optional[WorkEntry]:
+        '''Get the most recent abandoned work entry for a task.
+
+        Args:
+            task_id: ID of the task to query
+
+        Returns:
+            Most recent WorkEntry with an abandoned_reason, or None
+        '''
+        with self.SessionLocal() as session:
+            model = session.query(WorkEntryModel).filter(
+                WorkEntryModel.task_id == task_id,
+                WorkEntryModel.abandoned_reason.isnot(None),
+            ).order_by(WorkEntryModel.started_at.desc()).first()
+            return WorkEntry.model_validate(model) if model else None
 
     def update_work_entry(
         self,

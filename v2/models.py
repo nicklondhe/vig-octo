@@ -253,6 +253,7 @@ class TaskCreate(TaskBase):
     pass  # Inherits all validation from TaskBase
 
 
+
 class TaskUpdate(BaseModel):
     '''Request model for updating tasks (all fields optional, used by MCP server)'''
     title: Optional[str] = Field(None, min_length=1, max_length=500)
@@ -381,11 +382,22 @@ class TaskListResponse(BaseModel):
     tasks: list[Task]
 
 
+class TaskRecItem(BaseModel):
+    '''Single recommendation item returned by the rec engine.'''
+    task_id: int
+    title: str
+    category: CategoryType
+    est_minutes: Optional[int] = None
+    score: float = Field(..., ge=0.0, le=1.0)
+    breakdown: dict[str, float]
+
+
 class SessionResponse(BaseModel):
     '''Generic response for session operations'''
     success: bool
     message: str
     session_id: Optional[int] = None
+    recommendations: list[TaskRecItem] = Field(default_factory=list)
 
 
 class WorkEntryResponse(BaseModel):
@@ -400,6 +412,22 @@ class WeeklyGoalResponse(BaseModel):
     success: bool
     message: str
     goal_id: Optional[int] = None
+
+
+class SessionSummary(BaseModel):
+    '''Stats computed at session close.'''
+    session_id: int
+    duration_minutes: int
+    tasks_completed: int
+    effectiveness: Optional[int] = None
+    categories_completed: dict[str, int]
+
+
+class EndSessionResponse(BaseModel):
+    '''Response for end_session.'''
+    success: bool
+    message: str
+    summary: Optional[SessionSummary] = None
 
 
 # Database helper functions
