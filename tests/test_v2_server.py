@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import create_engine
@@ -12,7 +12,7 @@ project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
 from v2.db import TaskDB
-from v2.models import Base, TaskCreate
+from v2.models import Base, TaskCreate, WorkEntryModel
 from v2 import server
 
 
@@ -791,3 +791,147 @@ class TestDailyTriage:
 
         assert response.success is True
         assert len(response.tasks) == 0
+
+
+# Get Stats Tests
+
+class TestGetStats:
+    '''Tests for get_stats tool'''
+
+    def test_get_stats_empty_db(self, setup_server):
+        '''Test get_stats with no completed work'''
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.tasks_completed == 0
+        assert response.total_minutes == 0
+        assert response.category_distribution == {}
+        assert response.current_streak == 0
+        assert response.days == 7
+
+    def test_get_stats_invalid_days(self, setup_server):
+        '''Test get_stats with invalid days parameter'''
+        response = server.get_stats(days=0)
+
+        assert response.success is False
+        assert 'greater than 0' in response.message
+
+    def test_get_stats_counts_completed_tasks(self, setup_server, task_db):
+        '''Test get_stats counts completed tasks correctly'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+        task3 = task_db.create_task('Task 3', 'grow')
+
+        # Complete task1 and task2, leave task3 incomplete
+        we1 = task_db.start_work_entry(session.id, task1.id)
+        task_db.complete_work_entry(we1.id, completed=True)
+
+        we2 = task_db.start_work_entry(session.id, task2.id)
+        task_db.complete_work_entry(we2.id, completed=True)
+
+        we3 = task_db.start_work_entry(session.id, task3.id)
+        task_db.complete_work_entry(we3.id, completed=False)
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.tasks_completed == 2
+
+    def test_get_stats_category_distribution(self, setup_server, task_db):
+        '''Test get_stats returns correct category distribution'''
+        session = task_db.create_session()
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'grow')
+        task3 = task_db.create_task('Task 3', 'maintain')
+
+        for task in [task1, task2, task3]:
+            we = task_db.start_work_entry(session.id, task.id)
+            task_db.complete_work_entry(we.id, completed=True)
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.category_distribution.get('grow') == 2
+        assert response.category_distribution.get('maintain') == 1
+
+    def test_get_stats_default_days(self, setup_server):
+        '''Test get_stats uses 7 days as default'''
+        response = server.get_stats()
+
+        assert response.success is True
+        assert response.days == 7
+
+    def test_get_stats_streak_today(self, setup_server, task_db):
+        '''Test streak is 1 when there is a completed task today'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        we = task_db.start_work_entry(session.id, task.id)
+        task_db.complete_work_entry(we.id, completed=True)
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.current_streak == 1
+
+    def test_get_stats_total_minutes(self, setup_server, task_db):
+        '''Test total_minutes sums actual work entry durations'''
+        session = task_db.create_session()
+        task = task_db.create_task('Task', 'grow')
+        we = task_db.start_work_entry(session.id, task.id)
+
+        # Backdate started_at so the duration is measurable
+        thirty_min_ago = datetime.now(timezone.utc) - timedelta(minutes=30)
+        with task_db.SessionLocal() as db_session:
+            model = db_session.query(WorkEntryModel).filter_by(id=we.id).first()
+            model.started_at = thirty_min_ago
+            db_session.commit()
+
+        task_db.complete_work_entry(we.id, completed=True)
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.total_minutes >= 30
+
+    def test_get_stats_streak_multi_day(self, setup_server, task_db):
+        '''Test streak counts consecutive days correctly'''
+        session = task_db.create_session()
+
+        for days_ago in [0, 1, 2]:
+            task = task_db.create_task(f'Task {days_ago}', 'grow')
+            we = task_db.start_work_entry(session.id, task.id)
+            task_db.complete_work_entry(we.id, completed=True)
+            # Backdate both timestamps — streak uses ended_at for the activity date
+            entry_time = datetime.now(timezone.utc) - timedelta(days=days_ago, hours=1)
+            with task_db.SessionLocal() as db_session:
+                model = db_session.query(WorkEntryModel).filter_by(id=we.id).first()
+                model.started_at = entry_time
+                model.ended_at = entry_time + timedelta(minutes=30)
+                db_session.commit()
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.current_streak == 3
+
+    def test_get_stats_streak_with_gap(self, setup_server, task_db):
+        '''Test streak resets at a gap — only today counts when yesterday is missing'''
+        session = task_db.create_session()
+
+        # Entry today and two days ago, nothing yesterday
+        for days_ago in [0, 2]:
+            task = task_db.create_task(f'Task {days_ago}', 'grow')
+            we = task_db.start_work_entry(session.id, task.id)
+            task_db.complete_work_entry(we.id, completed=True)
+            entry_time = datetime.now(timezone.utc) - timedelta(days=days_ago, hours=1)
+            with task_db.SessionLocal() as db_session:
+                model = db_session.query(WorkEntryModel).filter_by(id=we.id).first()
+                model.started_at = entry_time
+                model.ended_at = entry_time + timedelta(minutes=30)
+                db_session.commit()
+
+        response = server.get_stats(days=7)
+
+        assert response.success is True
+        assert response.current_streak == 1  # yesterday breaks the chain

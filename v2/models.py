@@ -466,6 +466,17 @@ class DailyTriageResponse(BaseModel):
     tasks: list[DailyTriageItem] = Field(default_factory=list)
 
 
+class StatsResponse(BaseModel):
+    '''Response for the get_stats tool.'''
+    success: bool
+    message: str
+    days: int = 0
+    tasks_completed: int = 0
+    total_minutes: int = 0
+    category_distribution: dict[str, int] = Field(default_factory=dict)
+    current_streak: int = 0
+
+
 # Database helper functions
 
 def create_tables(engine) -> None:

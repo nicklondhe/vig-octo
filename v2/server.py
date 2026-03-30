@@ -30,6 +30,7 @@ from v2.models import (
     ResetTasksResponse,
     DailyTriageItem,
     DailyTriageResponse,
+    StatsResponse,
 )
 from v2.rec_engine import RecEngine
 from v2.util import get_week_start
@@ -348,13 +349,9 @@ def end_session(
         completed_entries = [e for e in entries if e.completed]
         tasks_completed = len(completed_entries)
 
-        categories_completed: dict[str, int] = {}
-        if completed_entries:
-            entry_tasks = task_db.get_tasks_by_ids([e.task_id for e in completed_entries])
-            cat_by_id = {t.id: t.category for t in entry_tasks}
-            for entry in completed_entries:
-                cat = cat_by_id.get(entry.task_id, 'unknown')
-                categories_completed[cat] = categories_completed.get(cat, 0) + 1
+        categories_completed = task_db.get_category_distribution(
+            [e.id for e in completed_entries]
+        )
 
         session = task_db.end_session(
             session_id=session_id,
@@ -607,4 +604,67 @@ def daily_triage() -> DailyTriageResponse:
         return DailyTriageResponse(
             success=False,
             message=f"Failed to run daily triage: {str(e)}",
+        )
+
+
+@mcp.tool()
+def get_stats(days: int = 7) -> StatsResponse:
+    '''Get productivity stats for the last N days.
+
+    Args:
+        days: Number of days to look back (default: 7, must be > 0)
+
+    Returns:
+        StatsResponse with tasks completed, category distribution,
+        total minutes worked, and current streak (consecutive days with
+        at least one completed task, ending today).
+    '''
+    try:
+        if days <= 0:
+            return StatsResponse(
+                success=False,
+                message="days must be greater than 0",
+                days=days,
+            )
+
+        entries = task_db.get_completed_work_entries_since(days)
+
+        tasks_completed = len(entries)
+
+        # Category distribution
+        category_distribution = task_db.get_category_distribution(
+            [e.id for e in entries]
+        )
+
+        # Total minutes from work entry durations
+        total_minutes = 0
+        for entry in entries:
+            if entry.started_at and entry.ended_at:
+                started = entry.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                ended = entry.ended_at
+                if ended.tzinfo is None:
+                    ended = ended.replace(tzinfo=timezone.utc)
+                minutes = int((ended - started).total_seconds() / 60)
+                total_minutes += max(0, minutes)
+
+        # Streak queries all history (not capped by days) so a 30-day streak
+        # is reported correctly even when days=7.
+        streak = task_db.get_current_streak()
+
+        return StatsResponse(
+            success=True,
+            message=f"Stats for last {days} day(s): {tasks_completed} task(s) completed",
+            days=days,
+            tasks_completed=tasks_completed,
+            total_minutes=total_minutes,
+            category_distribution=category_distribution,
+            current_streak=streak,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return StatsResponse(
+            success=False,
+            message=f"Failed to get stats: {str(e)}",
+            days=days,
         )
