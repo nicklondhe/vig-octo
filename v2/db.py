@@ -2,7 +2,7 @@
 Database access layer for v2 task management system.
 '''
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Literal, Optional
 
 from sqlalchemy import Engine, func
@@ -1271,3 +1271,20 @@ class TaskDB:
                 WorkEntryModel.started_at.desc()
             ).all()
             return [WorkEntry.model_validate(we) for we in work_entry_models]
+
+    def get_completed_work_entries_since(self, days: int) -> list[WorkEntry]:
+        '''Get completed work entries from the last N days.
+
+        Args:
+            days: Number of days to look back
+
+        Returns:
+            List of completed WorkEntry objects ordered by started_at descending
+        '''
+        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+        with self.SessionLocal() as session:
+            models = session.query(WorkEntryModel).filter(
+                WorkEntryModel.completed.is_(True),
+                WorkEntryModel.started_at >= cutoff,
+            ).order_by(WorkEntryModel.started_at.desc()).all()
+            return [WorkEntry.model_validate(m) for m in models]

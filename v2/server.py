@@ -2,7 +2,7 @@
 
 import sys
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 # Add project root to path for imports
 project_root = Path(__file__).parent.parent
@@ -30,6 +30,7 @@ from v2.models import (
     ResetTasksResponse,
     DailyTriageItem,
     DailyTriageResponse,
+    StatsResponse,
 )
 from v2.rec_engine import RecEngine
 from v2.util import get_week_start
@@ -607,4 +608,84 @@ def daily_triage() -> DailyTriageResponse:
         return DailyTriageResponse(
             success=False,
             message=f"Failed to run daily triage: {str(e)}",
+        )
+
+
+@mcp.tool()
+def get_stats(days: int = 7) -> StatsResponse:
+    '''Get productivity stats for the last N days.
+
+    Args:
+        days: Number of days to look back (default: 7, must be > 0)
+
+    Returns:
+        StatsResponse with tasks completed, category distribution,
+        total minutes worked, and current streak (consecutive days with
+        at least one completed task, ending today).
+    '''
+    try:
+        if days <= 0:
+            return StatsResponse(
+                success=False,
+                message="days must be greater than 0",
+                days=days,
+            )
+
+        entries = task_db.get_completed_work_entries_since(days)
+
+        tasks_completed = len(entries)
+
+        # Category distribution
+        task_ids = [e.task_id for e in entries]
+        tasks = task_db.get_tasks_by_ids(task_ids) if task_ids else []
+        cat_by_id = {t.id: t.category for t in tasks}
+
+        category_distribution: dict[str, int] = {}
+        for entry in entries:
+            cat = cat_by_id.get(entry.task_id, 'unknown')
+            category_distribution[cat] = category_distribution.get(cat, 0) + 1
+
+        # Total minutes from work entry durations
+        total_minutes = 0
+        for entry in entries:
+            if entry.started_at and entry.ended_at:
+                started = entry.started_at
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                ended = entry.ended_at
+                if ended.tzinfo is None:
+                    ended = ended.replace(tzinfo=timezone.utc)
+                minutes = int((ended - started).total_seconds() / 60)
+                total_minutes += max(0, minutes)
+
+        # Streak: consecutive days ending today with at least one completed entry
+        from datetime import date as date_type
+        active_dates: set[date_type] = set()
+        for entry in entries:
+            started = entry.started_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            active_dates.add(started.date())
+
+        streak = 0
+        today = datetime.now(timezone.utc).date()
+        current_day = today
+        while current_day in active_dates:
+            streak += 1
+            current_day -= timedelta(days=1)
+
+        return StatsResponse(
+            success=True,
+            message=f"Stats for last {days} day(s): {tasks_completed} task(s) completed",
+            days=days,
+            tasks_completed=tasks_completed,
+            total_minutes=total_minutes,
+            category_distribution=category_distribution,
+            current_streak=streak,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return StatsResponse(
+            success=False,
+            message=f"Failed to get stats: {str(e)}",
+            days=days,
         )
