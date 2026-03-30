@@ -415,27 +415,27 @@ class TestEndSession:
         response = server.end_session(session.id)
 
         assert response.success is True
-        assert response.session_id == session.id
+        assert response.summary.session_id == session.id
 
         # Verify session was ended
         ended_session = task_db.get_session(session.id)
         assert ended_session.ended_at is not None
 
     def test_end_session_with_outcomes(self, setup_server, task_db):
-        '''Test ending session with outcome data'''
+        '''Test ending session with effectiveness rating'''
         session = task_db.create_session()
 
         response = server.end_session(
             session_id=session.id,
-            tasks_completed=3,
-            effectiveness=4
+            effectiveness=4,
         )
 
         assert response.success is True
+        assert response.summary.effectiveness == 4
+        # No work entries — computed count should be 0
+        assert response.summary.tasks_completed == 0
 
-        # Verify outcome data was recorded
         ended_session = task_db.get_session(session.id)
-        assert ended_session.tasks_completed == 3
         assert ended_session.effectiveness == 4
 
     def test_end_session_invalid_session_id(self, setup_server):
@@ -485,10 +485,11 @@ class TestWorkflowIntegration:
         # End session
         end_response = server.end_session(
             session_id=session_id,
-            tasks_completed=1,
-            effectiveness=4
+            effectiveness=4,
         )
         assert end_response.success is True
+        assert end_response.summary.tasks_completed == 1
+        assert end_response.summary.effectiveness == 4
 
         # Verify final state
         task = task_db.get_task(task_id)
@@ -519,7 +520,7 @@ class TestWorkflowIntegration:
             )
 
         # End session
-        server.end_session(session_id, tasks_completed=3)
+        server.end_session(session_id)
 
         # Verify all tasks completed
         response = server.list_tasks(state='done')

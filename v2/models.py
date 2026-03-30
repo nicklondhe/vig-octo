@@ -382,12 +382,22 @@ class TaskListResponse(BaseModel):
     tasks: list[Task]
 
 
+class TaskRecItem(BaseModel):
+    '''Single recommendation item returned by the rec engine.'''
+    task_id: int
+    title: str
+    category: CategoryType
+    est_minutes: Optional[int] = None
+    score: float = Field(..., ge=0.0, le=1.0)
+    breakdown: dict[str, float]
+
+
 class SessionResponse(BaseModel):
     '''Generic response for session operations'''
     success: bool
     message: str
     session_id: Optional[int] = None
-    recommendations: list['TaskRecItem'] = []
+    recommendations: list[TaskRecItem] = Field(default_factory=list)
 
 
 class WorkEntryResponse(BaseModel):
@@ -418,17 +428,6 @@ class EndSessionResponse(BaseModel):
     success: bool
     message: str
     summary: Optional[SessionSummary] = None
-
-
-class TaskRecItem(BaseModel):
-    '''Single recommendation item returned by the rec engine.'''
-    task_id: int
-    title: str
-    category: CategoryType
-    est_minutes: Optional[int] = None
-    score: float = Field(..., ge=0.0, le=1.0)
-    breakdown: dict[str, float]
-
 
 
 # Database helper functions

@@ -1158,7 +1158,8 @@ class TaskDB:
         if not task_ids:
             return []
         with self.SessionLocal() as session:
-            subq = (
+            # Step 1: max started_at per task among abandoned entries
+            started_subq = (
                 session.query(
                     WorkEntryModel.task_id,
                     func.max(WorkEntryModel.started_at).label('max_started'),
@@ -1170,13 +1171,20 @@ class TaskDB:
                 .group_by(WorkEntryModel.task_id)
                 .subquery()
             )
+            # Step 2: from any ties on started_at, pick the highest id per task
+            id_subq = (
+                session.query(func.max(WorkEntryModel.id).label('max_id'))
+                .join(
+                    started_subq,
+                    (WorkEntryModel.task_id == started_subq.c.task_id)
+                    & (WorkEntryModel.started_at == started_subq.c.max_started),
+                )
+                .group_by(WorkEntryModel.task_id)
+                .subquery()
+            )
             models = (
                 session.query(WorkEntryModel)
-                .join(
-                    subq,
-                    (WorkEntryModel.task_id == subq.c.task_id)
-                    & (WorkEntryModel.started_at == subq.c.max_started),
-                )
+                .filter(WorkEntryModel.id.in_(session.query(id_subq.c.max_id)))
                 .all()
             )
             return [WorkEntry.model_validate(m) for m in models]
