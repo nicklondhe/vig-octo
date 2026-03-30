@@ -25,8 +25,11 @@ from v2.models import (
     SessionSummary,
     TaskStateType,
     CategoryType,
+    WeeklyGoalResponse,
+    WeeklyReviewResponse,
 )
 from v2.rec_engine import RecEngine
+from v2.util import get_week_start
 
 # Get configuration
 config = get_config()
@@ -381,4 +384,144 @@ def end_session(
         return EndSessionResponse(
             success=False,
             message=f"Failed to end session: {str(e)}",
+        )
+
+
+@mcp.tool()
+def set_weekly_goal(
+    title: str,
+    description: str | None = None,
+    category: CategoryType | None = None,
+) -> WeeklyGoalResponse:
+    '''Create a goal for the current week.
+
+    Automatically sets week_start to Monday of the current week.
+
+    Args:
+        title: Goal title (required)
+        description: Optional description of the goal
+        category: Optional category ('grow', 'maintain', 'sustain')
+
+    Returns:
+        WeeklyGoalResponse with goal_id
+    '''
+    try:
+        week_start = get_week_start()
+        existing = [g for g in task_db.get_current_week_goals() if g.status == 'active']
+        if existing:
+            return WeeklyGoalResponse(
+                success=False,
+                message=(
+                    f"An active goal already exists for this week (id={existing[0].id}: "
+                    f"'{existing[0].title}'). Archive or complete it before setting a new one."
+                ),
+                goal_id=existing[0].id,
+            )
+        goal = task_db.create_weekly_goal(
+            title=title,
+            week_start=week_start,
+            description=description,
+            category=category,
+        )
+        return WeeklyGoalResponse(
+            success=True,
+            message=f"Goal '{title}' created for week of {week_start}",
+            goal_id=goal.id,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return WeeklyGoalResponse(
+            success=False,
+            message=f"Failed to create weekly goal: {str(e)}",
+            goal_id=None,
+        )
+
+
+@mcp.tool()
+def link_task_to_goal(task_id: int, goal_id: int) -> TaskResponse:
+    '''Link an existing task to a weekly goal.
+
+    Updates the task's goal_id field.
+
+    Args:
+        task_id: ID of the task to link
+        goal_id: ID of the weekly goal to link to
+
+    Returns:
+        TaskResponse with success status
+    '''
+    try:
+        task = task_db.get_task(task_id)
+        if task is None:
+            return TaskResponse(
+                success=False,
+                message=f"Task {task_id} not found",
+                task_id=None,
+            )
+
+        goal = task_db.get_weekly_goal(goal_id)
+        if goal is None:
+            return TaskResponse(
+                success=False,
+                message=f"Goal {goal_id} not found",
+                task_id=None,
+            )
+
+        task_db.update_task(task_id, goal_id=goal_id)
+
+        return TaskResponse(
+            success=True,
+            message=f"Task '{task.title}' linked to goal '{goal.title}'",
+            task_id=task_id,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return TaskResponse(
+            success=False,
+            message=f"Failed to link task to goal: {str(e)}",
+            task_id=None,
+        )
+
+
+@mcp.tool()
+def weekly_review() -> WeeklyReviewResponse:
+    '''Review progress toward this week's goal.
+
+    Fetches the current week's active goal and calculates tasks completed,
+    total time invested, and completion percentage from linked tasks.
+
+    Returns:
+        WeeklyReviewResponse with goal progress stats
+    '''
+    try:
+        goals = task_db.get_current_week_goals()
+        active_goals = [g for g in goals if g.status == 'active']
+
+        if not active_goals:
+            return WeeklyReviewResponse(
+                success=True,
+                message="No active goal set for this week",
+            )
+
+        # Most recently created active goal is the intentional current one
+        goal = max(active_goals, key=lambda g: g.created_at)
+        tasks = task_db.get_tasks_by_goal(goal.id)
+
+        tasks_total = len(tasks)
+        tasks_completed = sum(1 for t in tasks if t.state == 'done')
+        time_invested = sum(t.actual_minutes or 0 for t in tasks if t.state == 'done')
+        completion_pct = (tasks_completed / tasks_total * 100) if tasks_total > 0 else 0.0
+
+        return WeeklyReviewResponse(
+            success=True,
+            message=f"Week review for goal '{goal.title}'",
+            goal_id=goal.id,
+            goal_title=goal.title,
+            tasks_total=tasks_total,
+            tasks_completed=tasks_completed,
+            time_invested_minutes=time_invested,
+            completion_pct=round(completion_pct, 1),
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return WeeklyReviewResponse(
+            success=False,
+            message=f"Failed to generate weekly review: {str(e)}",
         )

@@ -525,3 +525,162 @@ class TestWorkflowIntegration:
         # Verify all tasks completed
         response = server.list_tasks(state='done')
         assert len(response.tasks) == 3
+
+
+# Weekly Goal Tests
+
+class TestSetWeeklyGoal:
+    '''Tests for set_weekly_goal tool'''
+
+    def test_set_weekly_goal_minimal(self, setup_server):
+        '''Test creating a weekly goal with title only'''
+        response = server.set_weekly_goal(title='Ship the feature')
+        assert response.success is True
+        assert response.goal_id is not None
+        assert 'Ship the feature' in response.message
+
+    def test_set_weekly_goal_with_all_fields(self, setup_server):
+        '''Test creating a weekly goal with all optional fields'''
+        response = server.set_weekly_goal(
+            title='Learn SQLAlchemy',
+            description='Deep dive into ORM patterns',
+            category='grow',
+        )
+        assert response.success is True
+        assert response.goal_id is not None
+
+    def test_set_weekly_goal_links_to_current_week(self, setup_server, task_db):
+        '''Test that week_start is set to current Monday'''
+        from v2.util import get_week_start
+        response = server.set_weekly_goal(title='This week goal')
+        assert response.success is True
+        goal = task_db.get_weekly_goal(response.goal_id)
+        assert goal.week_start == get_week_start()
+
+    def test_set_weekly_goal_category_validation(self, setup_server):
+        '''Test that an invalid category returns a failure response'''
+        response = server.set_weekly_goal(title='Bad goal', category='invalid')  # type: ignore
+        assert response.success is False
+        assert response.goal_id is None
+
+
+# Link Task to Goal Tests
+
+class TestLinkTaskToGoal:
+    '''Tests for link_task_to_goal tool'''
+
+    def test_link_task_to_goal_success(self, setup_server, task_db):
+        '''Test linking a task to a goal updates goal_id'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='My Goal', week_start=get_week_start())
+        task_data = TaskCreate(title='Some task', category='grow')
+        task_resp = server.add_task(task_data)
+        task_id = task_resp.task_id
+
+        response = server.link_task_to_goal(task_id=task_id, goal_id=goal.id)
+
+        assert response.success is True
+        assert response.task_id == task_id
+        updated = task_db.get_task(task_id)
+        assert updated.goal_id == goal.id
+
+    def test_link_task_to_goal_invalid_task(self, setup_server, task_db):
+        '''Test linking with a non-existent task returns failure'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='My Goal', week_start=get_week_start())
+
+        response = server.link_task_to_goal(task_id=9999, goal_id=goal.id)
+
+        assert response.success is False
+        assert 'not found' in response.message
+
+    def test_link_task_to_goal_invalid_goal(self, setup_server):
+        '''Test linking with a non-existent goal returns failure'''
+        task_data = TaskCreate(title='Some task', category='grow')
+        task_resp = server.add_task(task_data)
+
+        response = server.link_task_to_goal(task_id=task_resp.task_id, goal_id=9999)
+
+        assert response.success is False
+        assert 'not found' in response.message
+
+
+# Weekly Review Tests
+
+class TestWeeklyReview:
+    '''Tests for weekly_review tool'''
+
+    def test_weekly_review_no_goal(self, setup_server):
+        '''Test review when no goal exists for current week'''
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.goal_id is None
+        assert 'No active goal' in response.message
+
+    def test_weekly_review_with_goal_no_tasks(self, setup_server):
+        '''Test review with a goal but no linked tasks'''
+        server.set_weekly_goal(title='Ship feature X')
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.goal_title == 'Ship feature X'
+        assert response.tasks_total == 0
+        assert response.tasks_completed == 0
+        assert response.completion_pct == 0.0
+
+    def test_weekly_review_with_tasks(self, setup_server, task_db):
+        '''Test review calculates completed tasks and time invested'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='Focus week', week_start=get_week_start())
+
+        # Create 3 tasks linked to goal, complete 2
+        for i in range(3):
+            task_data = TaskCreate(title=f'Task {i}', category='grow', est_minutes=30)
+            task_resp = server.add_task(task_data)
+            server.link_task_to_goal(task_id=task_resp.task_id, goal_id=goal.id)
+
+        # Complete 2 tasks via session workflow
+        session_resp = server.start_session()
+        session_id = session_resp.session_id
+        tasks = task_db.get_tasks_by_goal(goal.id)
+        for task in tasks[:2]:
+            work_resp = server.start_work(session_id, task.id)
+            server.complete_work(work_id=work_resp.work_entry_id, completed=True)
+        server.end_session(session_id)
+
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.tasks_total == 3
+        assert response.tasks_completed == 2
+        assert response.completion_pct == pytest.approx(66.7, abs=0.1)
+
+    def test_weekly_review_completion_pct(self, setup_server, task_db):
+        '''Test review reports 100% when all tasks completed'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='All done', week_start=get_week_start())
+        task_data = TaskCreate(title='Only task', category='maintain')
+        task_resp = server.add_task(task_data)
+        server.link_task_to_goal(task_id=task_resp.task_id, goal_id=goal.id)
+
+        session_resp = server.start_session()
+        work_resp = server.start_work(session_resp.session_id, task_resp.task_id)
+        server.complete_work(work_id=work_resp.work_entry_id, completed=True)
+        server.end_session(session_resp.session_id)
+
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.tasks_completed == 1
+        assert response.completion_pct == 100.0
+
+    def test_weekly_review_single_active_goal_enforced(self, setup_server):
+        '''Test that set_weekly_goal blocks a second active goal for the same week'''
+        first = server.set_weekly_goal(title='Older goal')
+        assert first.success is True
+
+        second = server.set_weekly_goal(title='Newer goal')
+        assert second.success is False
+        assert second.goal_id == first.goal_id  # returns the conflicting goal's id
+
+        # weekly_review still reports on the one active goal unambiguously
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.goal_title == 'Older goal'
