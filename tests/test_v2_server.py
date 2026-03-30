@@ -605,3 +605,70 @@ class TestLinkTaskToGoal:
 
         assert response.success is False
         assert 'not found' in response.message
+
+
+# Weekly Review Tests
+
+class TestWeeklyReview:
+    '''Tests for weekly_review tool'''
+
+    def test_weekly_review_no_goal(self, setup_server):
+        '''Test review when no goal exists for current week'''
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.goal_id is None
+        assert 'No active goal' in response.message
+
+    def test_weekly_review_with_goal_no_tasks(self, setup_server):
+        '''Test review with a goal but no linked tasks'''
+        server.set_weekly_goal(title='Ship feature X')
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.goal_title == 'Ship feature X'
+        assert response.tasks_total == 0
+        assert response.tasks_completed == 0
+        assert response.completion_pct == 0.0
+
+    def test_weekly_review_with_tasks(self, setup_server, task_db):
+        '''Test review calculates completed tasks and time invested'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='Focus week', week_start=get_week_start())
+
+        # Create 3 tasks linked to goal, complete 2
+        for i in range(3):
+            task_data = TaskCreate(title=f'Task {i}', category='grow', est_minutes=30)
+            task_resp = server.add_task(task_data)
+            server.link_task_to_goal(task_id=task_resp.task_id, goal_id=goal.id)
+
+        # Complete 2 tasks via session workflow
+        session_resp = server.start_session()
+        session_id = session_resp.session_id
+        tasks = task_db.get_tasks_by_goal(goal.id)
+        for task in tasks[:2]:
+            work_resp = server.start_work(session_id, task.id)
+            server.complete_work(work_id=work_resp.work_entry_id, completed=True)
+        server.end_session(session_id)
+
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.tasks_total == 3
+        assert response.tasks_completed == 2
+        assert response.completion_pct == pytest.approx(66.7, abs=0.1)
+
+    def test_weekly_review_completion_pct(self, setup_server, task_db):
+        '''Test review reports 100% when all tasks completed'''
+        from v2.util import get_week_start
+        goal = task_db.create_weekly_goal(title='All done', week_start=get_week_start())
+        task_data = TaskCreate(title='Only task', category='maintain')
+        task_resp = server.add_task(task_data)
+        server.link_task_to_goal(task_id=task_resp.task_id, goal_id=goal.id)
+
+        session_resp = server.start_session()
+        work_resp = server.start_work(session_resp.session_id, task_resp.task_id)
+        server.complete_work(work_id=work_resp.work_entry_id, completed=True)
+        server.end_session(session_resp.session_id)
+
+        response = server.weekly_review()
+        assert response.success is True
+        assert response.tasks_completed == 1
+        assert response.completion_pct == 100.0
