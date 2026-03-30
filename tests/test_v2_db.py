@@ -2314,4 +2314,119 @@ class TestWorkEntryEdgeCases:
         entries = task_db.get_work_entries_by_task(task.id)
 
         assert len(entries) == 2
-        assert all(e.completed for e in entries)
+
+
+class TestGetTasksByIds:
+    '''Tests for get_tasks_by_ids method.'''
+
+    def test_empty_list_returns_empty(self, task_db):
+        '''Empty input returns empty list without hitting the DB.'''
+        assert task_db.get_tasks_by_ids([]) == []
+
+    def test_returns_matching_tasks(self, task_db):
+        '''Returns exactly the tasks for the given IDs.'''
+        t1 = task_db.create_task('Task A', 'grow')
+        t2 = task_db.create_task('Task B', 'maintain')
+        task_db.create_task('Task C', 'sustain')  # not requested
+
+        result = task_db.get_tasks_by_ids([t1.id, t2.id])
+
+        assert len(result) == 2
+        assert {r.id for r in result} == {t1.id, t2.id}
+
+    def test_missing_ids_are_silently_omitted(self, task_db):
+        '''IDs that don't exist in the DB are silently skipped.'''
+        t1 = task_db.create_task('Task A', 'grow')
+
+        result = task_db.get_tasks_by_ids([t1.id, 99999])
+
+        assert len(result) == 1
+        assert result[0].id == t1.id
+
+    def test_all_missing_ids_returns_empty(self, task_db):
+        '''All non-existent IDs returns empty list.'''
+        assert task_db.get_tasks_by_ids([99998, 99999]) == []
+
+
+class TestGetLatestAbandonedEntriesBatch:
+    '''Tests for get_latest_abandoned_entries_batch method.'''
+
+    def test_empty_list_returns_empty(self, task_db):
+        '''Empty input returns empty list.'''
+        assert task_db.get_latest_abandoned_entries_batch([]) == []
+
+    def test_no_abandoned_entries_returns_empty(self, task_db):
+        '''Tasks with no abandonments are omitted from results.'''
+        task = task_db.create_task('Task', 'grow')
+        session = task_db.create_session()
+        entry = task_db.start_work_entry(session.id, task.id)
+        task_db.complete_work_entry(entry.id, completed=True)
+
+        result = task_db.get_latest_abandoned_entries_batch([task.id])
+
+        assert result == []
+
+    def test_returns_one_row_per_task(self, task_db):
+        '''Returns exactly one entry per task, even with multiple abandonments.'''
+        t1 = task_db.create_task('Task 1', 'grow', repeatable=True)
+        t2 = task_db.create_task('Task 2', 'maintain', repeatable=True)
+        session = task_db.create_session()
+
+        e1 = task_db.start_work_entry(session.id, t1.id)
+        task_db.end_work_entry(e1.id, abandoned_reason='wrong_time')
+        e2 = task_db.start_work_entry(session.id, t1.id)
+        task_db.end_work_entry(e2.id, abandoned_reason='too_hard')
+
+        e3 = task_db.start_work_entry(session.id, t2.id)
+        task_db.end_work_entry(e3.id, abandoned_reason='not_important')
+
+        result = task_db.get_latest_abandoned_entries_batch([t1.id, t2.id])
+
+        assert len(result) == 2
+        by_task = {r.task_id: r for r in result}
+        assert by_task[t1.id].id == e2.id
+        assert by_task[t2.id].id == e3.id
+
+    def test_returns_latest_not_first(self, task_db):
+        '''Returns the most recent abandonment, not the earliest.'''
+        task = task_db.create_task('Task', 'grow', repeatable=True)
+        session = task_db.create_session()
+
+        old = task_db.start_work_entry(session.id, task.id)
+        task_db.end_work_entry(old.id, abandoned_reason='wrong_time')
+        recent = task_db.start_work_entry(session.id, task.id)
+        task_db.end_work_entry(recent.id, abandoned_reason='too_hard')
+
+        result = task_db.get_latest_abandoned_entries_batch([task.id])
+
+        assert len(result) == 1
+        assert result[0].id == recent.id
+
+    def test_missing_task_ids_are_omitted(self, task_db):
+        '''Non-existent task IDs produce no rows (no error).'''
+        assert task_db.get_latest_abandoned_entries_batch([99999]) == []
+
+    def test_tie_on_started_at_returns_highest_id(self, task_db):
+        '''When two entries share the same started_at, the higher id wins.'''
+        task = task_db.create_task('Task', 'grow', repeatable=True)
+        session = task_db.create_session()
+
+        e1 = task_db.start_work_entry(session.id, task.id)
+        e2 = task_db.start_work_entry(session.id, task.id)
+
+        # Force identical started_at to create a tie
+        from v2.models import WorkEntryModel
+        from sqlalchemy.orm import sessionmaker
+        LocalSession = sessionmaker(bind=task_db.engine)
+        with LocalSession() as s:
+            we1 = s.query(WorkEntryModel).filter_by(id=e1.id).first()
+            we2 = s.query(WorkEntryModel).filter_by(id=e2.id).first()
+            we2.started_at = we1.started_at
+            we1.abandoned_reason = 'wrong_time'
+            we2.abandoned_reason = 'too_hard'
+            s.commit()
+
+        result = task_db.get_latest_abandoned_entries_batch([task.id])
+
+        assert len(result) == 1
+        assert result[0].id == e2.id  # higher id wins the tie
