@@ -671,11 +671,16 @@ class TestWeeklyReview:
         assert response.tasks_completed == 1
         assert response.completion_pct == 100.0
 
-    def test_weekly_review_picks_most_recent_goal(self, setup_server):
-        '''Test that weekly_review reports on the most recently created active goal'''
-        server.set_weekly_goal(title='Older goal')
-        server.set_weekly_goal(title='Newer goal')
+    def test_weekly_review_single_active_goal_enforced(self, setup_server):
+        '''Test that set_weekly_goal blocks a second active goal for the same week'''
+        first = server.set_weekly_goal(title='Older goal')
+        assert first.success is True
 
+        second = server.set_weekly_goal(title='Newer goal')
+        assert second.success is False
+        assert second.goal_id == first.goal_id  # returns the conflicting goal's id
+
+        # weekly_review still reports on the one active goal unambiguously
         response = server.weekly_review()
         assert response.success is True
-        assert response.goal_title == 'Newer goal'
+        assert response.goal_title == 'Older goal'

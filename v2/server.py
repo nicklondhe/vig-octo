@@ -407,6 +407,16 @@ def set_weekly_goal(
     '''
     try:
         week_start = get_week_start()
+        existing = [g for g in task_db.get_current_week_goals() if g.status == 'active']
+        if existing:
+            return WeeklyGoalResponse(
+                success=False,
+                message=(
+                    f"An active goal already exists for this week (id={existing[0].id}: "
+                    f"'{existing[0].title}'). Archive or complete it before setting a new one."
+                ),
+                goal_id=existing[0].id,
+            )
         goal = task_db.create_weekly_goal(
             title=title,
             week_start=week_start,
