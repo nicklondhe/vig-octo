@@ -27,6 +27,9 @@ from v2.models import (
     CategoryType,
     WeeklyGoalResponse,
     WeeklyReviewResponse,
+    ResetTasksResponse,
+    DailyTriageItem,
+    DailyTriageResponse,
 )
 from v2.rec_engine import RecEngine
 from v2.util import get_week_start
@@ -524,4 +527,84 @@ def weekly_review() -> WeeklyReviewResponse:
         return WeeklyReviewResponse(
             success=False,
             message=f"Failed to generate weekly review: {str(e)}",
+        )
+
+
+@mcp.tool()
+def reset_tasks(task_ids: list[int]) -> ResetTasksResponse:
+    '''Reset selected tasks back to ready state.
+
+    Clears state to 'ready' and completed_at, while preserving learning data
+    and last_completed_at. Useful for repeatable tasks or re-queueing tasks.
+
+    Args:
+        task_ids: List of task IDs to reset
+
+    Returns:
+        ResetTasksResponse with count of reset tasks and their IDs
+    '''
+    try:
+        if not task_ids:
+            return ResetTasksResponse(
+                success=False,
+                message="No task IDs provided",
+            )
+
+        task_ids = list(dict.fromkeys(task_ids))
+        reset = task_db.reset_tasks(task_ids)
+        reset_ids = [t.id for t in reset if t.id is not None]
+
+        return ResetTasksResponse(
+            success=True,
+            message=f"Reset {len(reset_ids)} task(s) to ready",
+            reset_count=len(reset_ids),
+            task_ids=reset_ids,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return ResetTasksResponse(
+            success=False,
+            message=f"Failed to reset tasks: {str(e)}",
+        )
+
+
+@mcp.tool()
+def daily_triage() -> DailyTriageResponse:
+    '''List completed repeatable tasks and show days since last completion.
+
+    Useful for identifying which repeatable tasks are due to be done again.
+
+    Returns:
+        DailyTriageResponse with completed repeatable tasks and days since completion
+    '''
+    try:
+        tasks = task_db.get_completed_repeatables()
+
+        now = datetime.now(timezone.utc)
+        items = []
+        for task in tasks:
+            if task.last_completed_at is not None:
+                completed_at = task.last_completed_at
+                if completed_at.tzinfo is None:
+                    completed_at = completed_at.replace(tzinfo=timezone.utc)
+                days_since = (now - completed_at).days
+            else:
+                days_since = 0
+
+            items.append(DailyTriageItem(
+                task_id=task.id,  # type: ignore[arg-type]
+                title=task.title,
+                category=task.category,
+                last_completed_at=completed_at if task.last_completed_at is not None else None,
+                days_since_completion=days_since,
+            ))
+
+        return DailyTriageResponse(
+            success=True,
+            message=f"Found {len(items)} completed repeatable task(s)",
+            tasks=items,
+        )
+    except Exception as e:  # pylint: disable=broad-except
+        return DailyTriageResponse(
+            success=False,
+            message=f"Failed to run daily triage: {str(e)}",
         )
