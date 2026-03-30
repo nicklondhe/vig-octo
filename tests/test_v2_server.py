@@ -684,3 +684,106 @@ class TestWeeklyReview:
         response = server.weekly_review()
         assert response.success is True
         assert response.goal_title == 'Older goal'
+
+
+# Reset Tasks Tests
+
+class TestResetTasks:
+    '''Tests for reset_tasks tool'''
+
+    def test_reset_tasks_success(self, setup_server, task_db):
+        '''Test resetting done tasks back to ready'''
+        task1 = task_db.create_task('Task 1', 'grow')
+        task2 = task_db.create_task('Task 2', 'maintain')
+        task_db.update_task_state(task1.id, 'done')
+        task_db.update_task_state(task2.id, 'done')
+
+        response = server.reset_tasks([task1.id, task2.id])
+
+        assert response.success is True
+        assert response.reset_count == 2
+        assert task1.id in response.task_ids
+        assert task2.id in response.task_ids
+
+        # Verify state was reset
+        t1 = task_db.get_task(task1.id)
+        assert t1.state == 'ready'
+        assert t1.completed_at is None
+
+    def test_reset_tasks_partial(self, setup_server, task_db):
+        '''Test resetting with a mix of valid and invalid task IDs'''
+        task = task_db.create_task('Task 1', 'grow')
+        task_db.update_task_state(task.id, 'done')
+
+        response = server.reset_tasks([task.id, 9999])
+
+        assert response.success is True
+        assert response.reset_count == 1
+        assert task.id in response.task_ids
+
+    def test_reset_tasks_empty_list(self, setup_server):
+        '''Test resetting with empty list returns failure'''
+        response = server.reset_tasks([])
+
+        assert response.success is False
+        assert response.reset_count == 0
+
+    def test_reset_tasks_preserves_learning_data(self, setup_server, task_db):
+        '''Test that reset preserves learning stats and last_completed_at'''
+        task = task_db.create_task('Repeatable', 'grow', repeatable=True)
+        task_db.increment_task_stat(task.id, 'accepted')
+        task_db.update_task_state(task.id, 'done')
+
+        server.reset_tasks([task.id])
+
+        updated = task_db.get_task(task.id)
+        assert updated.state == 'ready'
+        assert updated.times_accepted == 1  # learning data preserved
+
+
+# Daily Triage Tests
+
+class TestDailyTriage:
+    '''Tests for daily_triage tool'''
+
+    def test_daily_triage_empty(self, setup_server):
+        '''Test daily triage with no completed repeatables'''
+        response = server.daily_triage()
+
+        assert response.success is True
+        assert len(response.tasks) == 0
+
+    def test_daily_triage_shows_completed_repeatables(self, setup_server, task_db):
+        '''Test daily triage returns completed repeatable tasks'''
+        task = task_db.create_task('Morning workout', 'maintain', repeatable=True)
+        task_db.update_task_state(task.id, 'done')  # sets last_completed_at
+
+        response = server.daily_triage()
+
+        assert response.success is True
+        assert len(response.tasks) == 1
+        assert response.tasks[0].task_id == task.id
+        assert response.tasks[0].title == 'Morning workout'
+        assert response.tasks[0].days_since_completion >= 0
+
+    def test_daily_triage_excludes_non_repeatables(self, setup_server, task_db):
+        '''Test daily triage does not include non-repeatable tasks'''
+        repeatable = task_db.create_task('Repeatable', 'grow', repeatable=True)
+        non_repeatable = task_db.create_task('One-off', 'grow', repeatable=False)
+        task_db.update_task_state(repeatable.id, 'done')
+        task_db.update_task_state(non_repeatable.id, 'done')
+
+        response = server.daily_triage()
+
+        assert response.success is True
+        assert len(response.tasks) == 1
+        assert response.tasks[0].task_id == repeatable.id
+
+    def test_daily_triage_excludes_never_completed_repeatables(self, setup_server, task_db):
+        '''Test daily triage excludes repeatables that were never completed'''
+        task_db.create_task('Not done yet', 'grow', repeatable=True)
+
+        response = server.daily_triage()
+
+        assert response.success is True
+        assert len(response.tasks) == 0

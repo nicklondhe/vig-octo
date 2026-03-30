@@ -442,6 +442,30 @@ class WeeklyReviewResponse(BaseModel):
     completion_pct: float = 0.0
 
 
+class ResetTasksResponse(BaseModel):
+    '''Response for the reset_tasks tool.'''
+    success: bool
+    message: str
+    reset_count: int = 0
+    task_ids: list[int] = Field(default_factory=list)
+
+
+class DailyTriageItem(BaseModel):
+    '''Single item in daily triage — a completed repeatable task.'''
+    task_id: int
+    title: str
+    category: CategoryType
+    last_completed_at: Optional[datetime] = None
+    days_since_completion: int
+
+
+class DailyTriageResponse(BaseModel):
+    '''Response for the daily_triage tool.'''
+    success: bool
+    message: str
+    tasks: list[DailyTriageItem] = Field(default_factory=list)
+
+
 # Database helper functions
 
 def create_tables(engine) -> None:
