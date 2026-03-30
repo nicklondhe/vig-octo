@@ -558,12 +558,10 @@ class TestSetWeeklyGoal:
         assert goal.week_start == get_week_start()
 
     def test_set_weekly_goal_category_validation(self, setup_server):
-        '''Test that invalid category raises an error'''
-        try:
-            server.set_weekly_goal(title='Bad goal', category='invalid')  # type: ignore
-            assert False, 'Should have raised an error'
-        except Exception:
-            pass  # Expected
+        '''Test that an invalid category returns a failure response'''
+        response = server.set_weekly_goal(title='Bad goal', category='invalid')  # type: ignore
+        assert response.success is False
+        assert response.goal_id is None
 
 
 # Link Task to Goal Tests
