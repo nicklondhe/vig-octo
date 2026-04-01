@@ -222,6 +222,27 @@ class TestListTasks:
         assert response.tasks[1].id == task2.id
         assert response.tasks[2].id == task1.id
 
+    def test_list_tasks_lightweight_schema(self, setup_server, task_db):
+        '''Test that list_tasks returns lightweight TaskSummary, not full Task'''
+        task_db.create_task('Task 1', 'grow', est_minutes=30)
+
+        response = server.list_tasks()
+
+        assert response.success is True
+        task = response.tasks[0]
+        # Fields that should be present
+        assert task.id is not None
+        assert task.title == 'Task 1'
+        assert task.category == 'grow'
+        assert task.state == 'ready'
+        assert task.est_minutes == 30
+        # Learning/stat fields should not exist on the summary
+        assert not hasattr(task, 'times_suggested')
+        assert not hasattr(task, 'times_accepted')
+        assert not hasattr(task, 'avg_energy_after')
+        assert not hasattr(task, 'created_at')
+        assert not hasattr(task, 'completed_at')
+
 
 # Start Session Tests
 
@@ -272,6 +293,7 @@ class TestStartWork:
         assert response.success is True
         assert response.work_entry_id is not None
         assert 'Test task' in response.message
+        assert response.started_at is not None
 
         # Verify work entry was created
         work_entry = task_db.get_work_entry(response.work_entry_id)
@@ -323,6 +345,8 @@ class TestCompleteWork:
 
         assert response.success is True
         assert response.work_entry_id == work_entry.id
+        assert response.started_at is not None
+        assert response.minutes_spent is not None and response.minutes_spent >= 0
 
         # Verify work entry was completed
         completed_entry = task_db.get_work_entry(work_entry.id)
@@ -351,6 +375,8 @@ class TestCompleteWork:
         # Verify task state was NOT changed to done
         updated_task = task_db.get_task(task.id)
         assert updated_task.state == 'ready'  # Still ready for repeatable tasks
+        # But last_completed_at must be set so daily_triage can track cadence
+        assert updated_task.last_completed_at is not None
 
     def test_complete_work_abandoned(self, setup_server, task_db):
         '''Test completing work that was abandoned'''

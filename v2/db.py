@@ -1051,10 +1051,13 @@ class TaskDB:
                 if minutes > 0:
                     actual_minutes = minutes
 
-            # Update task state if completed and not repeatable
-            if completed and not task_model.repeatable:
-                task_model.state = 'done'
-                task_model.completed_at = datetime.now(timezone.utc)
+            # Update task state if completed
+            if completed:
+                if not task_model.repeatable:
+                    task_model.state = 'done'
+                    task_model.completed_at = datetime.now(timezone.utc)
+                else:
+                    task_model.last_completed_at = datetime.now(timezone.utc)
 
             # Update task learning data
             # Note: avg_energy_after uses times_accepted as the count.

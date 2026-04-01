@@ -2186,6 +2186,8 @@ class TestCompleteWorkEntry:
         updated_task = task_db.get_task(task.id)
         assert updated_task.state == 'ready'
         assert updated_task.completed_at is None
+        # But last_completed_at must be set so daily_triage can track cadence
+        assert updated_task.last_completed_at is not None
 
     def test_complete_work_updates_avg_energy(self, task_db):
         '''Test that avg_energy_after is updated from energy_after.'''

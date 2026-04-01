@@ -382,6 +382,26 @@ class TaskListResponse(BaseModel):
     tasks: list[Task]
 
 
+class TaskSummary(BaseModel):
+    '''Lightweight task model for list responses.'''
+    id: Optional[int] = None
+    title: str
+    category: CategoryType
+    state: TaskStateType = 'ready'
+    est_minutes: Optional[int] = None
+    repeatable: bool = False
+    goal_id: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TaskSummaryListResponse(BaseModel):
+    '''Lightweight response for listing tasks'''
+    success: bool
+    message: str
+    tasks: list[TaskSummary]
+
+
 class TaskRecItem(BaseModel):
     '''Single recommendation item returned by the rec engine.'''
     task_id: int
@@ -405,6 +425,8 @@ class WorkEntryResponse(BaseModel):
     success: bool
     message: str
     work_entry_id: Optional[int] = None
+    started_at: Optional[datetime] = None
+    minutes_spent: Optional[int] = None
 
 
 class WeeklyGoalResponse(BaseModel):
