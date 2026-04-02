@@ -17,7 +17,7 @@ from v2.models import (
     Base,
     TaskCreate,
     TaskResponse,
-    TaskListResponse,
+    TaskSummaryListResponse,
     HealthCheckResponse,
     SessionResponse,
     WorkEntryResponse,
@@ -31,6 +31,7 @@ from v2.models import (
     DailyTriageItem,
     DailyTriageResponse,
     StatsResponse,
+    TaskSummary,
 )
 from v2.rec_engine import RecEngine
 from v2.util import get_week_start
@@ -39,7 +40,7 @@ from v2.util import get_week_start
 config = get_config()
 
 # Create an MCP server
-mcp = FastMCP("V2 Task Management System", get_version(), dependencies=["pydantic", "sqlalchemy"])
+mcp = FastMCP("V2 Task Management System", get_version(), dependencies=["pydantic", "sqlalchemy", "numpy", "pandas"])
 
 # Create SQLite engine
 engine = create_engine(config['db_path'])
@@ -137,7 +138,7 @@ def list_tasks(
     category: CategoryType | None = None,
     goal_id: int | None = None,
     limit: int | None = None
-) -> TaskListResponse:
+) -> TaskSummaryListResponse:
     '''List tasks with optional filtering.
 
     Args:
@@ -147,12 +148,13 @@ def list_tasks(
         limit: Maximum number of tasks to return (must be > 0) - optional
 
     Returns:
-        TaskListResponse with filtered tasks (ordered by created_at desc)
+        TaskSummaryListResponse with filtered tasks (id, title, category, state,
+        est_minutes, repeatable, goal_id — ordered by created_at desc)
     '''
     try:
         # Validate limit
         if limit is not None and limit <= 0:
-            return TaskListResponse(
+            return TaskSummaryListResponse(
                 success=False,
                 message="limit must be greater than 0",
                 tasks=[]
@@ -166,13 +168,15 @@ def list_tasks(
             limit=limit
         )
 
-        return TaskListResponse(
+        summaries = [TaskSummary.model_validate(t) for t in tasks]
+
+        return TaskSummaryListResponse(
             success=True,
-            message=f"Found {len(tasks)} tasks",
-            tasks=tasks
+            message=f"Found {len(summaries)} tasks",
+            tasks=summaries
         )
     except Exception as e:  # pylint: disable=broad-except
-        return TaskListResponse(
+        return TaskSummaryListResponse(
             success=False,
             message=f"Failed to list tasks: {str(e)}",
             tasks=[]
@@ -259,7 +263,8 @@ def start_work(session_id: int, task_id: int) -> WorkEntryResponse:
         return WorkEntryResponse(
             success=True,
             message=f"Started work on task '{task.title}'",
-            work_entry_id=work_entry.id
+            work_entry_id=work_entry.id,
+            started_at=work_entry.started_at,
         )
     except Exception as e:  # pylint: disable=broad-except
         return WorkEntryResponse(
@@ -312,10 +317,22 @@ def complete_work(
         task = task_db.get_task(completed_entry.task_id)
         task_title = task.title if task else "unknown"
 
+        minutes_spent = None
+        if completed_entry.started_at and completed_entry.ended_at:
+            started = completed_entry.started_at
+            if started.tzinfo is None:
+                started = started.replace(tzinfo=timezone.utc)
+            ended = completed_entry.ended_at
+            if ended.tzinfo is None:
+                ended = ended.replace(tzinfo=timezone.utc)
+            minutes_spent = max(0, int((ended - started).total_seconds() / 60))
+
         return WorkEntryResponse(
             success=True,
             message=f"Work completed on task '{task_title}'",
-            work_entry_id=work_id
+            work_entry_id=work_id,
+            started_at=completed_entry.started_at,
+            minutes_spent=minutes_spent,
         )
     except Exception as e:  # pylint: disable=broad-except
         return WorkEntryResponse(
